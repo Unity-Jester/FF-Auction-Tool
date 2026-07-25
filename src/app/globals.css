@@ -7,6 +7,7 @@
   --color-text-muted: #a8afa5;
   --color-line: #3a4039;
   --color-accent: #d9ff48;
+  --color-accent-text: #d9ff48;
   --color-accent-ink: #152000;
   --color-focus: #f3f5f0;
   --font-sans: Arial, Helvetica, sans-serif;
@@ -32,6 +33,7 @@
     --color-text: #1d211e;
     --color-text-muted: #596158;
     --color-line: #cbd2c8;
+    --color-accent-text: #4d6800;
     --color-focus: #1d211e;
   }
 }
