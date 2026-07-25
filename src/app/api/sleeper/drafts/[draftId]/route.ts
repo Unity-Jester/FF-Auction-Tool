@@ -10,7 +10,6 @@ import { parseDraftReference } from "@/integrations/sleeper/parse-draft-referenc
 import type {
   SleeperDraft,
   SleeperLeague,
-  SleeperPick,
   SleeperPlayerMap,
   SleeperRoster,
   SleeperUser,
@@ -19,7 +18,7 @@ import type {
 type Context = { params: Promise<{ draftId: string }> };
 type DetailClient = {
   getDraft(draftId: string, options?: SleeperRequestOptions): Promise<SleeperDraft>;
-  getDraftPicks(draftId: string, options?: SleeperRequestOptions): Promise<SleeperPick[]>;
+  getDraftPicks(draftId: string, options?: SleeperRequestOptions): Promise<unknown[]>;
   getLeague(leagueId: string, options?: SleeperRequestOptions): Promise<SleeperLeague>;
   getLeagueUsers(leagueId: string, options?: SleeperRequestOptions): Promise<SleeperUser[]>;
   getLeagueRosters(leagueId: string, options?: SleeperRequestOptions): Promise<SleeperRoster[]>;
@@ -88,4 +87,3 @@ export function createDraftHandler(client: DetailClient) {
 
 const client = new SleeperClient();
 export const GET = createDraftHandler(client);
-

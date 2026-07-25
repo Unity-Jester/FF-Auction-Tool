@@ -77,6 +77,7 @@ export const SleeperPlayerSchema = z
 
 export const SleeperDraftsSchema = z.array(SleeperDraftSchema);
 export const SleeperPicksSchema = z.array(SleeperPickSchema);
+export const SleeperRawPicksSchema = z.array(z.unknown());
 export const SleeperUsersSchema = z.array(SleeperUserSchema);
 export const SleeperRostersSchema = z.array(SleeperRosterSchema);
 export const SleeperPlayerMapSchema = z.record(z.string(), SleeperPlayerSchema);
@@ -88,4 +89,3 @@ export type SleeperPick = z.infer<typeof SleeperPickSchema>;
 export type SleeperLeague = z.infer<typeof SleeperLeagueSchema>;
 export type SleeperRoster = z.infer<typeof SleeperRosterSchema>;
 export type SleeperPlayerMap = z.infer<typeof SleeperPlayerMapSchema>;
-

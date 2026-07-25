@@ -31,7 +31,12 @@ export type NormalizedDraft = {
   teams: SourceTeam[];
   users: Array<ReturnType<typeof SleeperUserSchema.parse>>;
   players: SleeperPlayerMap;
-  quarantinedPicks: unknown[];
+  quarantinedPicks: QuarantinedPick[];
+};
+
+export type QuarantinedPick = {
+  pick: unknown;
+  reason: "INVALID_PICK" | "INVALID_AMOUNT" | "CONFLICTING_DUPLICATE";
 };
 
 type NormalizeInput = {
@@ -179,50 +184,67 @@ export function normalizeDraft(input: NormalizeInput): NormalizedDraft {
 
   const parsedGroups = new Map<
     string,
-    Array<{ raw: unknown; pick: ReturnType<typeof SleeperPickSchema.parse>; amount: number }>
+    Array<{
+      raw: unknown;
+      purchase: DraftPurchase;
+    }>
   >();
-  const quarantinedPicks: unknown[] = [];
+  const quarantinedPicks: QuarantinedPick[] = [];
   for (const raw of input.picks) {
     const parsed = SleeperPickSchema.safeParse(raw);
     if (!parsed.success) {
-      quarantinedPicks.push(raw);
+      quarantinedPicks.push({ pick: raw, reason: "INVALID_PICK" });
       continue;
     }
     const amount = strictPositiveAmount(parsed.data.metadata.amount);
     if (amount === null) {
-      quarantinedPicks.push(raw);
+      quarantinedPicks.push({ pick: raw, reason: "INVALID_AMOUNT" });
       continue;
     }
-    const key = `${parsed.data.pick_no}:${parsed.data.player_id}:${parsed.data.roster_id}`;
+    const purchase: DraftPurchase = {
+      draftId: String(draft.draft_id),
+      playerId: String(parsed.data.player_id),
+      rosterId: parsed.data.roster_id,
+      amount,
+      pickNo: parsed.data.pick_no,
+      createdAt:
+        typeof parsed.data.metadata.created_at === "string"
+          ? parsed.data.metadata.created_at
+          : null,
+      source: "sleeper",
+      keeper: keeper(parsed.data.metadata),
+    };
+    const key = JSON.stringify([
+      purchase.draftId,
+      purchase.playerId,
+      purchase.rosterId,
+    ]);
     const group = parsedGroups.get(key) ?? [];
-    group.push({ raw, pick: parsed.data, amount });
+    group.push({ raw, purchase });
     parsedGroups.set(key, group);
   }
 
   const purchases: DraftPurchase[] = [];
   [...parsedGroups.entries()]
-    .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
     .forEach(([, group]) => {
-      const signatures = new Set(
-        group.map(({ amount, pick }) => `${amount}:${keeper(pick.metadata)}`),
-      );
+      const signatures = new Set(group.map(({ purchase }) => JSON.stringify(purchase)));
       if (signatures.size > 1) {
-        quarantinedPicks.push(...group.map(({ raw }) => raw));
+        quarantinedPicks.push(
+          ...group.map(({ raw }) => ({
+            pick: raw,
+            reason: "CONFLICTING_DUPLICATE" as const,
+          })),
+        );
         return;
       }
-      const { pick, amount } = group[0];
-      purchases.push({
-        draftId: String(draft.draft_id),
-        playerId: String(pick.player_id),
-        rosterId: pick.roster_id,
-        amount,
-        pickNo: pick.pick_no,
-        createdAt:
-          typeof pick.metadata.created_at === "string" ? pick.metadata.created_at : null,
-        source: "sleeper",
-        keeper: keeper(pick.metadata),
-      });
+      purchases.push(group[0].purchase);
     });
+  purchases.sort(
+    (a, b) =>
+      a.pickNo - b.pickNo ||
+      (a.createdAt ?? "").localeCompare(b.createdAt ?? "") ||
+      a.playerId.localeCompare(b.playerId),
+  );
 
   const teamMetadata = sourceTeams(teamCount, draft, users, rosters);
   const snapshotTeams = teamMetadata.map((team) => {

@@ -5,8 +5,8 @@ import {
   SleeperDraftsSchema,
   SleeperLeagueSchema,
   SleeperNflStateSchema,
-  SleeperPicksSchema,
   SleeperPlayerMapSchema,
+  SleeperRawPicksSchema,
   SleeperRostersSchema,
   SleeperUserSchema,
   SleeperUsersSchema,
@@ -95,7 +95,7 @@ export class SleeperClient {
   getDraftPicks(draftId: string, options?: SleeperRequestOptions) {
     return this.request(
       `/draft/${encodeURIComponent(draftId)}/picks`,
-      SleeperPicksSchema,
+      SleeperRawPicksSchema,
       options,
     );
   }
@@ -124,4 +124,3 @@ export class SleeperClient {
     return this.request("/players/nfl", SleeperPlayerMapSchema, options);
   }
 }
-

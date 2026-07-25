@@ -184,6 +184,92 @@ describe("normalizeDraft", () => {
     expect(result.quarantinedPicks).toHaveLength(3);
   });
 
+  it("retains one copy of exact duplicate purchases", () => {
+    const pick = {
+      draft_id: auctionDraft.draft_id,
+      player_id: "4046",
+      roster_id: 3,
+      pick_no: 1,
+      metadata: { amount: "42", created_at: "2026-07-25T10:00:00.000Z" },
+    };
+    const result = normalizeDraft({ draft: auctionDraft, picks: [pick, { ...pick }] });
+
+    expect(result.snapshot.purchases).toHaveLength(1);
+    expect(result.quarantinedPicks).toHaveLength(0);
+  });
+
+  it("quarantines corrected pick-number conflicts sharing purchase identity", () => {
+    const pick = {
+      draft_id: auctionDraft.draft_id,
+      player_id: "4046",
+      roster_id: 3,
+      pick_no: 1,
+      metadata: { amount: "42" },
+    };
+    const result = normalizeDraft({
+      draft: auctionDraft,
+      picks: [pick, { ...pick, pick_no: 2 }],
+    });
+
+    expect(result.snapshot.purchases).toHaveLength(0);
+    expect(result.quarantinedPicks).toEqual([
+      expect.objectContaining({ reason: "CONFLICTING_DUPLICATE" }),
+      expect.objectContaining({ reason: "CONFLICTING_DUPLICATE" }),
+    ]);
+  });
+
+  it("quarantines timestamp conflicts sharing purchase identity", () => {
+    const pick = {
+      draft_id: auctionDraft.draft_id,
+      player_id: "4046",
+      roster_id: 3,
+      pick_no: 1,
+      metadata: { amount: "42", created_at: "2026-07-25T10:00:00.000Z" },
+    };
+    const result = normalizeDraft({
+      draft: auctionDraft,
+      picks: [
+        pick,
+        {
+          ...pick,
+          metadata: { ...pick.metadata, created_at: "2026-07-25T10:00:01.000Z" },
+        },
+      ],
+    });
+
+    expect(result.snapshot.purchases).toHaveLength(0);
+    expect(result.quarantinedPicks).toHaveLength(2);
+  });
+
+  it("quarantines every record in a mixed exact-and-conflicting group", () => {
+    const pick = {
+      draft_id: auctionDraft.draft_id,
+      player_id: "4046",
+      roster_id: 3,
+      pick_no: 1,
+      metadata: { amount: "42" },
+    };
+    const result = normalizeDraft({
+      draft: auctionDraft,
+      picks: [pick, { ...pick }, { ...pick, metadata: { amount: "43" } }],
+    });
+
+    expect(result.snapshot.purchases).toHaveLength(0);
+    expect(result.quarantinedPicks).toHaveLength(3);
+  });
+
+  it.each([
+    ["pre_draft", "pre"],
+    ["drafting", "drafting"],
+    ["complete", "complete"],
+  ] as const)("maps %s status to %s", (source, expected) => {
+    const result = normalizeDraft({
+      draft: { ...auctionDraft, status: source },
+      picks: [],
+    });
+    expect(result.snapshot.status).toBe(expected);
+  });
+
   it("builds stable mock teams when league_id is null", () => {
     const result = normalizeDraft({
       draft: {
@@ -277,7 +363,11 @@ describe("Sleeper routes", () => {
 
   it("normalizes real and mock draft detail without requiring global fetch", async () => {
     const createClient = (
-      draft: Omit<typeof auctionDraft, "league_id"> & { league_id: string | null },
+      draft: Omit<typeof auctionDraft, "league_id"> & {
+        league_id: string | null;
+        slot_to_roster_id?: Record<string, number>;
+        draft_order?: Record<string, number>;
+      },
     ) => ({
       getDraft: vi.fn(async () => draft),
       getDraftPicks: vi.fn(async () => []),
@@ -298,7 +388,13 @@ describe("Sleeper routes", () => {
       expect.objectContaining({ next: { revalidate: 300 } }),
     );
 
-    const mockClient = createClient({ ...auctionDraft, league_id: null });
+    const mockClient = createClient({
+      ...auctionDraft,
+      league_id: null,
+      settings: { ...auctionDraft.settings, teams: 2 },
+      slot_to_roster_id: { "1": 7, "2": 2 },
+      draft_order: { Alice: 1, Bob: 2 },
+    });
     const mockResponse = await createDraftHandler(mockClient)(
       new Request(`http://localhost/api/sleeper/drafts/${auctionDraft.draft_id}`),
       { params: Promise.resolve({ draftId: auctionDraft.draft_id }) },
@@ -308,6 +404,89 @@ describe("Sleeper routes", () => {
     expect(mockClient.getPlayers).toHaveBeenCalledWith(
       expect.objectContaining({ next: { revalidate: 86_400 } }),
     );
+    expect(mockClient.getDraftPicks).toHaveBeenCalledWith(
+      auctionDraft.draft_id,
+      expect.objectContaining({ next: { revalidate: 2 } }),
+    );
+    expect((await mockResponse.json()).snapshot.teams).toEqual([
+      expect.objectContaining({ rosterId: 7, name: "Alice" }),
+      expect.objectContaining({ rosterId: 2, name: "Bob" }),
+    ]);
+  });
+
+  it("carries schema-invalid picks through the client and quarantines only that pick", async () => {
+    const mockDraft = {
+      ...auctionDraft,
+      league_id: null,
+      settings: { ...auctionDraft.settings, teams: 2 },
+      slot_to_roster_id: { "1": 7, "2": 2 },
+      draft_order: { Alice: 1, Bob: 2 },
+    };
+    const fetchFn = vi.fn(async (url: string) => {
+      if (url.endsWith(`/draft/${auctionDraft.draft_id}`)) {
+        return new Response(JSON.stringify(mockDraft));
+      }
+      if (url.endsWith(`/draft/${auctionDraft.draft_id}/picks`)) {
+        return new Response(
+          JSON.stringify([
+            {
+              draft_id: auctionDraft.draft_id,
+              player_id: "4046",
+              roster_id: 7,
+              pick_no: 1,
+              metadata: { amount: "42" },
+            },
+            {
+              draft_id: auctionDraft.draft_id,
+              player_id: "bad",
+              roster_id: 0,
+              pick_no: 2,
+              metadata: { amount: "12" },
+            },
+          ]),
+        );
+      }
+      if (url.endsWith("/players/nfl")) return new Response(JSON.stringify({}));
+      return new Response("unexpected", { status: 500 });
+    });
+    const response = await createDraftHandler(new SleeperClient(fetchFn))(
+      new Request(`http://localhost/api/sleeper/drafts/${auctionDraft.draft_id}`),
+      { params: Promise.resolve({ draftId: auctionDraft.draft_id }) },
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.snapshot.purchases).toEqual([
+      expect.objectContaining({ playerId: "4046", rosterId: 7, amount: 42 }),
+    ]);
+    expect(body.quarantinedPicks).toEqual([
+      expect.objectContaining({ reason: "INVALID_PICK" }),
+    ]);
+    expect(body.snapshot.teams).toEqual([
+      expect.objectContaining({ rosterId: 7, name: "Alice" }),
+      expect.objectContaining({ rosterId: 2, name: "Bob" }),
+    ]);
+  });
+
+  it("rejects invalid draft detail references before calling Sleeper", async () => {
+    const client = {
+      getDraft: vi.fn(),
+      getDraftPicks: vi.fn(),
+      getLeague: vi.fn(),
+      getLeagueUsers: vi.fn(),
+      getLeagueRosters: vi.fn(),
+      getPlayers: vi.fn(),
+    };
+    const response = await createDraftHandler(client)(
+      new Request("http://localhost"),
+      { params: Promise.resolve({ draftId: "draft-123456789012345678" }) },
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: { code: "INVALID_DRAFT", message: "Invalid Sleeper draft" },
+    });
+    expect(client.getDraft).not.toHaveBeenCalled();
   });
 
   it("returns stable JSON errors", async () => {
@@ -327,5 +506,31 @@ describe("Sleeper routes", () => {
     expect(await response.json()).toEqual({
       error: { code: "NOT_FOUND", message: "Sleeper resource not found" },
     });
+  });
+
+  it.each([
+    ["RATE_LIMITED", 429, "Sleeper rate limit reached"],
+    ["UPSTREAM", 502, "Sleeper service unavailable"],
+    ["MALFORMED", 502, "Sleeper returned malformed data"],
+  ] as const)("returns stable draft-route %s errors", async (code, status, message) => {
+    const client = {
+      getDraft: vi.fn(async () => {
+        throw new SleeperError(code);
+      }),
+      getDraftPicks: vi.fn(async () => []),
+      getLeague: vi.fn(),
+      getLeagueUsers: vi.fn(),
+      getLeagueRosters: vi.fn(),
+      getPlayers: vi.fn(async () => ({})),
+    };
+    const response = await createDraftHandler(client)(
+      new Request("http://localhost"),
+      { params: Promise.resolve({ draftId: auctionDraft.draft_id }) },
+    );
+    const serialized = JSON.stringify(await response.json());
+
+    expect(response.status).toBe(status);
+    expect(JSON.parse(serialized)).toEqual({ error: { code, message } });
+    expect(serialized).not.toContain("raw upstream secret");
   });
 });
