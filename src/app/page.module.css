@@ -1,0 +1,78 @@
+.hero {
+  display: flex;
+  width: min(100%, 42rem);
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: clamp(var(--space-8), 7vw, 5rem) var(--space-6);
+  flex-direction: column;
+  justify-content: center;
+  border-inline: 1px solid var(--color-line);
+  background: var(--color-surface);
+}
+
+.eyebrow {
+  margin: 0 0 var(--space-4);
+  color: var(--color-accent);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.hero h1 {
+  max-width: 10ch;
+  margin: 0;
+  font-size: clamp(3rem, 9vw, 6.25rem);
+  font-weight: 700;
+  letter-spacing: -0.07em;
+  line-height: 0.88;
+}
+
+.copy {
+  max-width: 36rem;
+  margin: var(--space-6) 0 0;
+  color: var(--color-text-muted);
+  font-size: 1.125rem;
+  line-height: 1.55;
+}
+
+.connectForm {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-8);
+}
+
+.connectForm label {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.connectForm input {
+  width: 100%;
+  min-height: var(--target-size);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+}
+
+.connectForm button {
+  justify-self: start;
+  margin-top: var(--space-2);
+  padding: 0 var(--space-4);
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+  font-weight: 700;
+  transition: transform var(--motion-fast) ease, background-color var(--motion-fast) ease;
+}
+
+.connectForm button:hover {
+  transform: translateY(-1px);
+}
