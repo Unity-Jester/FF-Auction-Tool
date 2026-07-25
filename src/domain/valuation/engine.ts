@@ -47,60 +47,82 @@ function roundTwoDecimals(value: number): number {
   return Number(value.toFixed(2));
 }
 
-function playerPositions(
+type CanonicalPlayerContext = {
+  selectedPositions: Map<string, Position>;
+  eligiblePositions: Map<string, Position[]>;
+};
+
+function canonicalPlayerContext(
   input: RunValuationEngineInput,
-): Map<string, Position> {
+): CanonicalPlayerContext {
   const canonical = new Map<
     string,
-    { positions: Set<Position>; points: number }
+    { positions: Set<Position>; points?: number }
   >();
   input.players.forEach((player) => {
-    if (!Number.isFinite(player.points)) {
+    if (
+      typeof player.playerId !== "string" ||
+      !Array.isArray(player.positions)
+    ) {
       return;
     }
     const current = canonical.get(player.playerId) ?? {
       positions: new Set<Position>(),
-      points: player.points,
     };
     player.positions.forEach((position) => {
       if (POSITIONS.includes(position)) {
         current.positions.add(position);
       }
     });
-    current.points = Math.max(current.points, player.points);
+    if (
+      Number.isFinite(player.points) &&
+      (current.points === undefined || player.points > current.points)
+    ) {
+      current.points = player.points;
+    }
     canonical.set(player.playerId, current);
   });
-  const result = new Map<string, Position>();
+  const selectedPositions = new Map<string, Position>();
+  const eligiblePositions = new Map<string, Position[]>();
   [...canonical.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
     .forEach(([playerId, player]) => {
-      const position = [...player.positions].sort((left, right) => {
-        const blended = (candidate: Position) => {
-          const starter = Math.max(
-            0,
-            player.points - input.replacementLevels.starterPoints[candidate],
-          );
-          const bench = Math.max(
-            0,
-            player.points - input.replacementLevels.benchPoints[candidate],
-          );
-          const maximum = Math.max(starter, bench);
-          return maximum === 0
-            ? 0
-            : maximum *
-                ((starter / maximum) * input.strategy.starterBudgetShare +
-                  (bench / maximum) * (1 - input.strategy.starterBudgetShare));
-        };
-        return (
-          blended(right) - blended(left) ||
-          POSITIONS.indexOf(left) - POSITIONS.indexOf(right)
-        );
-      })[0];
+      const eligible = [...player.positions].sort(
+        (left, right) => POSITIONS.indexOf(left) - POSITIONS.indexOf(right),
+      );
+      eligiblePositions.set(playerId, eligible);
+      const points = player.points;
+      const position =
+        points === undefined
+          ? eligible[0]
+          : [...eligible].sort((left, right) => {
+              const blended = (candidate: Position) => {
+                const starter = Math.max(
+                  0,
+                  points - input.replacementLevels.starterPoints[candidate],
+                );
+                const bench = Math.max(
+                  0,
+                  points - input.replacementLevels.benchPoints[candidate],
+                );
+                const maximum = Math.max(starter, bench);
+                return maximum === 0
+                  ? 0
+                  : maximum *
+                      ((starter / maximum) * input.strategy.starterBudgetShare +
+                        (bench / maximum) *
+                          (1 - input.strategy.starterBudgetShare));
+              };
+              return (
+                blended(right) - blended(left) ||
+                POSITIONS.indexOf(left) - POSITIONS.indexOf(right)
+              );
+            })[0];
       if (position !== undefined) {
-        result.set(playerId, position);
+        selectedPositions.set(playerId, position);
       }
     });
-  return result;
+  return { selectedPositions, eligiblePositions };
 }
 
 function validatePurchases(
@@ -147,17 +169,52 @@ function validatePurchases(
 
 function buildPositionState(
   input: RunValuationEngineInput,
-  baseValues: ReadonlyMap<string, BasePlayerValue>,
-  positionsByPlayer: ReadonlyMap<string, Position>,
+  selectedPositions: ReadonlyMap<string, Position>,
+  eligiblePositions: ReadonlyMap<string, ReadonlyArray<Position>>,
 ): PositionState {
-  const draftedCounts = positionRecord();
+  const assignFixedPositions = (playerIds: ReadonlyArray<string>) => {
+    const remainingNeed = { ...input.league.starters };
+    const counts = positionRecord();
+    const assignments = new Map<string, Position>();
+    [...playerIds]
+      .map((playerId) => ({
+        playerId,
+        eligible: eligiblePositions.get(playerId) ?? [],
+      }))
+      .sort(
+        (left, right) =>
+          left.eligible.length - right.eligible.length ||
+          left.playerId.localeCompare(right.playerId),
+      )
+      .forEach(({ playerId, eligible }) => {
+        const position = [...eligible].sort(
+          (left, right) =>
+            remainingNeed[right] - remainingNeed[left] ||
+            POSITIONS.indexOf(left) - POSITIONS.indexOf(right),
+        )[0];
+        if (position === undefined) {
+          return;
+        }
+        assignments.set(playerId, position);
+        counts[position] += 1;
+        remainingNeed[position] = Math.max(0, remainingNeed[position] - 1);
+      });
+    return { assignments, counts };
+  };
+
+  const myTeam = input.teams.find(
+    (team) => team.rosterId === input.myRosterId,
+  )!;
+  const myFixedPositions = assignFixedPositions(myTeam.playerIds);
+  const draftedCounts = myFixedPositions.counts;
   const spend = positionRecord();
   input.purchases.forEach((purchase) => {
     if (purchase.rosterId !== input.myRosterId) {
       return;
     }
-    const position = positionsByPlayer.get(purchase.playerId)!;
-    draftedCounts[position] += 1;
+    const position =
+      myFixedPositions.assignments.get(purchase.playerId) ??
+      selectedPositions.get(purchase.playerId)!;
     spend[position] += purchase.amount;
     if (!Number.isSafeInteger(spend[position])) {
       throw new Error(`Total ${position} spend must be a safe integer`);
@@ -174,13 +231,7 @@ function buildPositionState(
 
   const leagueNeed = positionRecord();
   input.teams.forEach((team) => {
-    const counts = positionRecord();
-    team.playerIds.forEach((playerId) => {
-      const position = positionsByPlayer.get(playerId);
-      if (position !== undefined) {
-        counts[position] += 1;
-      }
-    });
+    const counts = assignFixedPositions(team.playerIds).counts;
     POSITIONS.forEach((position) => {
       leagueNeed[position] += Math.max(
         0,
@@ -189,16 +240,11 @@ function buildPositionState(
     });
   });
 
-  const availableSupply = positionRecord();
-  baseValues.forEach((value) => {
-    availableSupply[value.position] += 1;
-  });
   return {
     draftedCounts,
     spend,
     desiredSlots,
     leagueNeed,
-    availableSupply,
   };
 }
 
@@ -261,14 +307,14 @@ export function runValuationEngine(
     throw new Error("Exactly one matching user roster is required");
   }
   validateOverrides(input);
-  const positionsByPlayer = playerPositions(input);
-  validatePurchases(input, positionsByPlayer);
+  const playerContext = canonicalPlayerContext(input);
+  validatePurchases(input, playerContext.selectedPositions);
 
   const baseValues = calculateBaseValues(input);
   const positionState = buildPositionState(
     input,
-    baseValues,
-    positionsByPlayer,
+    playerContext.selectedPositions,
+    playerContext.eligiblePositions,
   );
   const rankedAll = [...baseValues.values()].sort(compareValues);
   const byPosition = new Map(

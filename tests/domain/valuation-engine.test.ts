@@ -6,6 +6,7 @@ import type { StrategyConfig } from "@/domain/strategy/types";
 import { calculateBaseValues } from "@/domain/valuation/base-values";
 import {
   runValuationEngine,
+  type PlayerValuation,
   type RunValuationEngineInput,
 } from "@/domain/valuation/engine";
 import type {
@@ -299,6 +300,113 @@ describe("runValuationEngine", () => {
     );
   });
 
+  it("detects elite-tier scarcity even when lower-tier tight ends remain", () => {
+    const original = input();
+    const extraTightEnds = Array.from({ length: 10 }, (_, index) =>
+      player(`te-depth-${index + 1}`, "TE", 60 - index * 4),
+    );
+    const result = runValuationEngine({
+      ...original,
+      players: [
+        ...original.players.map((candidate) =>
+          candidate.playerId === "te-2"
+            ? { ...candidate, points: 60 }
+            : candidate,
+        ),
+        ...extraTightEnds,
+      ],
+      teams: original.teams.map((team) => ({
+        ...team,
+        openSlots: 8,
+      })),
+    });
+    const positiveTightEnds = [...result.values()].filter(
+      (value) => value.position === "TE" && value.baseValue > 0,
+    );
+
+    expect(positiveTightEnds.length).toBeGreaterThan(2);
+    expect(result.get("te-1")!.adjustments).toContainEqual(
+      expect.objectContaining({ code: "SCARCITY" }),
+    );
+  });
+
+  it("excludes zero-value players from tier scarcity supply", () => {
+    const original = input();
+    const zeroValueTightEnds = Array.from({ length: 8 }, (_, index) =>
+      player(`te-zero-${index + 1}`, "TE", 0),
+    );
+    const result = runValuationEngine({
+      ...original,
+      players: [...original.players, ...zeroValueTightEnds],
+    });
+
+    expect(result.get("te-1")!.adjustments).toContainEqual(
+      expect.objectContaining({ code: "SCARCITY" }),
+    );
+    for (const candidate of zeroValueTightEnds) {
+      expect(result.get(candidate.playerId)!.baseValue).toBe(0);
+      expect(
+        result
+          .get(candidate.playerId)!
+          .adjustments.some((adjustment) => adjustment.code === "SCARCITY"),
+      ).toBe(false);
+    }
+  });
+
+  it("uses an authoritative rostered keeper to fill a fixed starter slot", () => {
+    const original = input();
+    const keeper = player("keeper-te", "TE", Number.NaN);
+    const result = runValuationEngine({
+      ...original,
+      players: [...original.players, keeper],
+      teams: original.teams.map((team) =>
+        team.rosterId === 1
+          ? {
+              ...team,
+              openSlots: 3,
+              playerIds: [...team.playerIds, keeper.playerId],
+            }
+          : { ...team, openSlots: 5 },
+      ),
+    });
+
+    for (const playerId of ["te-1", "te-2"]) {
+      const adjustmentCodes = result
+        .get(playerId)!
+        .adjustments.map((adjustment) => adjustment.code);
+      expect(adjustmentCodes).not.toContain("ROSTER_NEED");
+      expect(adjustmentCodes).not.toContain("POSITION_BUDGET");
+    }
+  });
+
+  it("assigns a multi-position keeper once using fixed need and position order", () => {
+    const original = input();
+    const keeper: ScoredPlayer = {
+      playerId: "keeper-rb-wr",
+      positions: ["WR", "RB"],
+      points: 145,
+    };
+    const result = runValuationEngine({
+      ...original,
+      players: [...original.players, keeper],
+      teams: original.teams.map((team) =>
+        team.rosterId === 1 ? { ...team, playerIds: [keeper.playerId] } : team,
+      ),
+      purchases: [purchase("owned-wr", 2, 18, 1)],
+    });
+
+    expect(
+      result
+        .get("rb-1")!
+        .adjustments.some((adjustment) => adjustment.code === "ROSTER_NEED"),
+    ).toBe(false);
+    expect(
+      result
+        .get("wr-1")!
+        .adjustments.some((adjustment) => adjustment.code === "ROSTER_NEED"),
+    ).toBe(true);
+  });
+
   it("uses a valid manual override exactly and rejects an invalid override", () => {
     const result = runValuationEngine(
       input({ valueOverrides: { "rb-1": 42.25 } }),
@@ -349,6 +457,68 @@ describe("runValuationEngine", () => {
 
     expect(up.adjustedValue).toBeCloseTo(up.baseValue * 1.35, 2);
     expect(down.adjustedValue).toBeCloseTo(down.baseValue * 0.65, 2);
+    const adjustmentCents = (value: PlayerValuation) =>
+      Math.round(
+        value.adjustments.reduce(
+          (sum, adjustment) => sum + adjustment.delta,
+          0,
+        ) * 100,
+      );
+    expect(adjustmentCents(up)).toBe(
+      Math.round((up.adjustedValue - up.baseValue) * 100),
+    );
+    expect(adjustmentCents(down)).toBe(
+      Math.round((down.adjustedValue - down.baseValue) * 100),
+    );
+  });
+
+  it("applies custom rank multipliers and treats an empty curve as neutral", () => {
+    const custom = runValuationEngine(
+      input({ archetype: "custom", spendingCurve: [1.2, 0.8] }),
+    );
+    const empty = runValuationEngine(
+      input({ archetype: "custom", spendingCurve: [] }),
+    );
+    const customDelta = (playerId: string) =>
+      custom
+        .get(playerId)!
+        .adjustments.find(
+          (adjustment) => adjustment.label === "Custom spending curve",
+        )?.delta;
+
+    expect(customDelta("qb-1")).toBeGreaterThan(0);
+    expect(customDelta("qb-2")).toBeLessThan(0);
+    expect(
+      [...empty.values()].some((value) =>
+        value.adjustments.some(
+          (adjustment) => adjustment.label === "Custom spending curve",
+        ),
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects non-finite and negative custom curve multipliers", () => {
+    expect(() =>
+      runValuationEngine(
+        input({ archetype: "custom", spendingCurve: [Number.NaN] }),
+      ),
+    ).toThrow(/multiplier/i);
+    expect(() =>
+      runValuationEngine(input({ archetype: "custom", spendingCurve: [-0.1] })),
+    ).toThrow(/multiplier/i);
+  });
+
+  it("returns zero bid guidance when the user's reserve is inconsistent", () => {
+    const original = input();
+    const result = runValuationEngine({
+      ...original,
+      teams: original.teams.map((team) =>
+        team.rosterId === 1 ? { ...team, remainingBudget: 2 } : team,
+      ),
+    });
+
+    expect(result.get("rb-1")!.maximumLegalBid).toBe(0);
+    expect(result.get("rb-1")!.recommendedMaxBid).toBe(0);
   });
 
   it("returns zero legal bids for a filled roster", () => {

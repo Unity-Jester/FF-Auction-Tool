@@ -27,7 +27,6 @@ export type PositionState = {
   spend: Record<Position, number>;
   desiredSlots: Record<Position, number>;
   leagueNeed: Record<Position, number>;
-  availableSupply: Record<Position, number>;
 };
 
 const PREFERENCE_EFFECTS = {
@@ -201,15 +200,39 @@ function needAdjustment(
 function scarcityAdjustment(
   player: BasePlayerValue,
   positionState: PositionState,
+  rankedAtPosition: ReadonlyArray<BasePlayerValue>,
 ): PercentAdjustment | undefined {
-  const need = positionState.leagueNeed[player.position];
-  const supply = positionState.availableSupply[player.position];
-  if (need <= 0 || supply > need) {
+  if (player.baseValue <= 0) {
+    return undefined;
+  }
+  const positiveValues = rankedAtPosition.filter(
+    (value) => value.baseValue > 0,
+  );
+  const maximum = positiveValues[0]?.baseValue ?? 0;
+  if (maximum <= 0) {
+    return undefined;
+  }
+  const tier = (value: number): "Elite" | "High" | "Mid" | "Low" => {
+    const ratio = value / maximum;
+    return ratio >= 0.75
+      ? "Elite"
+      : ratio >= 0.5
+        ? "High"
+        : ratio >= 0.25
+          ? "Mid"
+          : "Low";
+  };
+  const playerTier = tier(player.baseValue);
+  const supply = positiveValues.filter(
+    (value) => tier(value.baseValue) === playerTier,
+  ).length;
+  const need = Math.max(1, positionState.leagueNeed[player.position]);
+  if (supply > need) {
     return undefined;
   }
   return {
     code: "SCARCITY",
-    label: "Position scarcity",
+    label: `${playerTier} tier scarcity`,
     percent: clamp(((need - supply + 1) / need) * 10, 0, 10),
   };
 }
@@ -239,7 +262,7 @@ export function calculatePercentAdjustments(
   return [
     positionBudgetAdjustment(player, strategy, positionState, rankedAtPosition),
     needAdjustment(player, positionState),
-    scarcityAdjustment(player, positionState),
+    scarcityAdjustment(player, positionState, rankedAtPosition),
     ...spendingCurveParts(player, strategy, rankedAll, rankedAtPosition),
     preferenceAdjustment(player, strategy),
   ].filter((adjustment): adjustment is PercentAdjustment =>
@@ -259,14 +282,33 @@ export function applyPercentAdjustments(
   const scale = total === 0 ? 1 : boundedTotal / total;
   const adjustedValue =
     Math.round(Math.max(0, baseValue * (1 + boundedTotal / 100)) * 100) / 100;
+  const dollarAdjustments = adjustments.map(({ percent, ...adjustment }) => ({
+    ...adjustment,
+    delta: Math.round(baseValue * ((percent * scale) / 100) * 100) / 100,
+  }));
+  if (dollarAdjustments.length > 0) {
+    const targetCents = Math.round((adjustedValue - baseValue) * 100);
+    const roundedCents = dollarAdjustments.reduce(
+      (sum, adjustment) => sum + Math.round(adjustment.delta * 100),
+      0,
+    );
+    const remainderCents = targetCents - roundedCents;
+    if (remainderCents !== 0) {
+      const recipient = [...dollarAdjustments].sort(
+        (left, right) =>
+          Math.abs(right.delta) - Math.abs(left.delta) ||
+          left.code.localeCompare(right.code) ||
+          left.label.localeCompare(right.label),
+      )[0];
+      recipient.delta =
+        Math.round((recipient.delta + remainderCents / 100) * 100) / 100;
+    }
+  }
 
   return {
     adjustedValue,
-    adjustments: adjustments
-      .map(({ percent, ...adjustment }) => ({
-        ...adjustment,
-        delta: Math.round(baseValue * ((percent * scale) / 100) * 100) / 100,
-      }))
-      .filter((adjustment) => adjustment.delta !== 0),
+    adjustments: dollarAdjustments.filter(
+      (adjustment) => adjustment.delta !== 0,
+    ),
   };
 }
