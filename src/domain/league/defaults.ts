@@ -13,6 +13,17 @@ const defaultScoring: Omit<ScoringRules, "reception" | "positionReceptionBonus">
   fumbleLost: -2,
 };
 
+const supportedScoringFields = [
+  "passYard",
+  "passTd",
+  "interception",
+  "rushYard",
+  "rushTd",
+  "receivingYard",
+  "receivingTd",
+  "fumbleLost",
+] as const;
+
 export type CreateLeagueConfigInput = {
   teams: number;
   budget: number;
@@ -39,6 +50,12 @@ function assertNonNegativeInteger(value: number, name: string): void {
   }
 }
 
+function assertFiniteNumber(value: unknown, name: string): asserts value is number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`${name} must be a finite number`);
+  }
+}
+
 function normalizeFlex(flex: CreateLeagueConfigInput["flex"]): FlexSlot[] {
   return flex.map((slot, index) => {
     assertNonNegativeInteger(slot.count, `Flex slot ${index + 1} count`);
@@ -57,6 +74,33 @@ function normalizeFlex(flex: CreateLeagueConfigInput["flex"]): FlexSlot[] {
 
     return { count: slot.count, eligible };
   });
+}
+
+function normalizeScoring(
+  receptionPoints: number,
+  overrides: CreateLeagueConfigInput["scoring"],
+): ScoringRules {
+  assertFiniteNumber(receptionPoints, "Reception points");
+
+  const scoring = { ...defaultScoring };
+  supportedScoringFields.forEach((field) => {
+    const value = overrides?.[field];
+    if (value !== undefined) {
+      assertFiniteNumber(value, `Scoring ${field}`);
+      scoring[field] = value;
+    }
+  });
+
+  const positionReceptionBonus: Partial<Record<Position, number>> = {};
+  positions.forEach((position) => {
+    const value = overrides?.positionReceptionBonus?.[position];
+    if (value !== undefined) {
+      assertFiniteNumber(value, `Position reception bonus for ${position}`);
+      positionReceptionBonus[position] = value;
+    }
+  });
+
+  return { ...scoring, reception: receptionPoints, positionReceptionBonus };
 }
 
 export function createLeagueConfig(input: CreateLeagueConfigInput): LeagueConfig {
@@ -89,12 +133,7 @@ export function createLeagueConfig(input: CreateLeagueConfigInput): LeagueConfig
     bench: input.bench,
     rosterSize,
     flex,
-    scoring: {
-      ...defaultScoring,
-      reception: input.receptionPoints,
-      ...input.scoring,
-      positionReceptionBonus: { ...input.scoring?.positionReceptionBonus },
-    },
+    scoring: normalizeScoring(input.receptionPoints, input.scoring),
     capKickerDefenseAtOne: input.capKickerDefenseAtOne ?? true,
   };
 }

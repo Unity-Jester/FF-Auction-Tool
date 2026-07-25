@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createLeagueConfig } from "@/domain/league/defaults";
+import type { Position } from "@/domain/league/types";
 
 const standardStarters = {
   QB: 1,
@@ -137,6 +138,78 @@ describe("createLeagueConfig", () => {
     });
   });
 
+  it.each([NaN, Infinity])("rejects non-finite reception points: %s", (receptionPoints) => {
+    expect(() =>
+      createLeagueConfig({
+        teams: 12,
+        budget: 200,
+        starters: standardStarters,
+        bench: 6,
+        flex: standardFlex,
+        receptionPoints,
+      }),
+    ).toThrow("Reception points must be a finite number");
+  });
+
+  it.each([NaN, Infinity, "six"])(
+    "rejects invalid supported scoring overrides: %s",
+    (passTd) => {
+      expect(() =>
+        createLeagueConfig({
+          teams: 12,
+          budget: 200,
+          starters: standardStarters,
+          bench: 6,
+          flex: standardFlex,
+          receptionPoints: 0.5,
+          scoring: { passTd } as never,
+        }),
+      ).toThrow("Scoring passTd must be a finite number");
+    },
+  );
+
+  it("ignores undefined scoring overrides and retains defaults", () => {
+    const league = createLeagueConfig({
+      teams: 12,
+      budget: 200,
+      starters: standardStarters,
+      bench: 6,
+      flex: standardFlex,
+      receptionPoints: 0.5,
+      scoring: { passTd: undefined },
+    });
+
+    expect(league.scoring.passTd).toBe(4);
+  });
+
+  it("does not let runtime scoring reception override reception points", () => {
+    const league = createLeagueConfig({
+      teams: 12,
+      budget: 200,
+      starters: standardStarters,
+      bench: 6,
+      flex: standardFlex,
+      receptionPoints: 0.5,
+      scoring: { reception: 3 } as never,
+    });
+
+    expect(league.scoring.reception).toBe(0.5);
+  });
+
+  it("rejects non-finite position reception bonuses", () => {
+    expect(() =>
+      createLeagueConfig({
+        teams: 12,
+        budget: 200,
+        starters: standardStarters,
+        bench: 6,
+        flex: standardFlex,
+        receptionPoints: 0.5,
+        scoring: { positionReceptionBonus: { TE: Infinity } },
+      }),
+    ).toThrow("Position reception bonus for TE must be a finite number");
+  });
+
   it("returns fresh default objects for every league", () => {
     const first = createLeagueConfig({
       teams: 12,
@@ -160,5 +233,30 @@ describe("createLeagueConfig", () => {
 
     expect(second.scoring.positionReceptionBonus).toEqual({});
     expect(second.flex[0].eligible).toEqual(["RB", "WR", "TE"]);
+  });
+
+  it("isolates the normalized league from caller mutations", () => {
+    const starters = { ...standardStarters };
+    const flex: { count: number; eligible: Position[] }[] = [
+      { count: 1, eligible: ["RB", "WR", "TE"] },
+    ];
+    const positionReceptionBonus = { TE: 0.5 };
+    const league = createLeagueConfig({
+      teams: 12,
+      budget: 200,
+      starters,
+      bench: 6,
+      flex,
+      receptionPoints: 0.5,
+      scoring: { positionReceptionBonus },
+    });
+
+    starters.RB = 4;
+    flex[0].eligible = ["QB"];
+    positionReceptionBonus.TE = 2;
+
+    expect(league.starters.RB).toBe(2);
+    expect(league.flex[0].eligible).toEqual(["RB", "WR", "TE"]);
+    expect(league.scoring.positionReceptionBonus).toEqual({ TE: 0.5 });
   });
 });
