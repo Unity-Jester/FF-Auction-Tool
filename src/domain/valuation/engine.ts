@@ -1,0 +1,344 @@
+import type { DraftPurchase } from "../draft/types";
+import type { Position } from "../league/types";
+import {
+  calculateBaseValues,
+  type BasePlayerValue,
+  type CalculateBaseValuesInput,
+} from "./base-values";
+import {
+  applyPercentAdjustments,
+  calculatePercentAdjustments,
+  type PositionState,
+  type ValueAdjustment,
+} from "./adjust-values";
+import { explainAdjustments, sortAdjustments } from "./explanations";
+
+const POSITIONS: Position[] = ["QB", "RB", "WR", "TE", "K", "DEF"];
+export type { ValueAdjustment } from "./adjust-values";
+
+export type RunValuationEngineInput = CalculateBaseValuesInput & {
+  myRosterId: number;
+  purchases: DraftPurchase[];
+};
+
+export type PlayerValuation = BasePlayerValue & {
+  adjustments: ValueAdjustment[];
+  adjustedValue: number;
+  maximumLegalBid: number;
+  recommendedMaxBid: number;
+  explanation: string;
+};
+
+function positionRecord(initial = 0): Record<Position, number> {
+  return Object.fromEntries(
+    POSITIONS.map((position) => [position, initial]),
+  ) as Record<Position, number>;
+}
+
+function compareValues(left: BasePlayerValue, right: BasePlayerValue): number {
+  return (
+    right.baseValue - left.baseValue ||
+    right.points - left.points ||
+    left.playerId.localeCompare(right.playerId)
+  );
+}
+
+function playerPositions(
+  input: RunValuationEngineInput,
+): Map<string, Position> {
+  const canonical = new Map<
+    string,
+    { positions: Set<Position>; points: number }
+  >();
+  input.players.forEach((player) => {
+    if (!Number.isFinite(player.points)) {
+      return;
+    }
+    const current = canonical.get(player.playerId) ?? {
+      positions: new Set<Position>(),
+      points: player.points,
+    };
+    player.positions.forEach((position) => {
+      if (POSITIONS.includes(position)) {
+        current.positions.add(position);
+      }
+    });
+    current.points = Math.max(current.points, player.points);
+    canonical.set(player.playerId, current);
+  });
+  const result = new Map<string, Position>();
+  [...canonical.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .forEach(([playerId, player]) => {
+      const position = [...player.positions].sort((left, right) => {
+        const blended = (candidate: Position) => {
+          const starter = Math.max(
+            0,
+            player.points - input.replacementLevels.starterPoints[candidate],
+          );
+          const bench = Math.max(
+            0,
+            player.points - input.replacementLevels.benchPoints[candidate],
+          );
+          const maximum = Math.max(starter, bench);
+          return maximum === 0
+            ? 0
+            : maximum *
+                ((starter / maximum) * input.strategy.starterBudgetShare +
+                  (bench / maximum) * (1 - input.strategy.starterBudgetShare));
+        };
+        return (
+          blended(right) - blended(left) ||
+          POSITIONS.indexOf(left) - POSITIONS.indexOf(right)
+        );
+      })[0];
+      if (position !== undefined) {
+        result.set(playerId, position);
+      }
+    });
+  return result;
+}
+
+function validatePurchases(
+  input: RunValuationEngineInput,
+  positionsByPlayer: ReadonlyMap<string, Position>,
+): void {
+  const owners = new Map<string, number>();
+  const rosterIds = new Set(input.teams.map((team) => team.rosterId));
+  input.teams.forEach((team) =>
+    team.playerIds.forEach((playerId) => owners.set(playerId, team.rosterId)),
+  );
+  const purchased = new Set<string>();
+  const picks = new Set<number>();
+
+  input.purchases.forEach((purchase, index) => {
+    if (purchased.has(purchase.playerId)) {
+      throw new Error(`Duplicate purchase for player ${purchase.playerId}`);
+    }
+    purchased.add(purchase.playerId);
+    if (!Number.isSafeInteger(purchase.pickNo) || purchase.pickNo < 1) {
+      throw new Error(`Purchase ${index + 1} pick number must be valid`);
+    }
+    if (picks.has(purchase.pickNo)) {
+      throw new Error(`Duplicate purchase pick number ${purchase.pickNo}`);
+    }
+    picks.add(purchase.pickNo);
+    if (
+      !Number.isSafeInteger(purchase.amount) ||
+      purchase.amount < input.league.minBid
+    ) {
+      throw new Error(`Purchase ${index + 1} amount must be a valid bid`);
+    }
+    if (!rosterIds.has(purchase.rosterId)) {
+      throw new Error(`Purchase ${index + 1} has an unknown roster owner`);
+    }
+    if (owners.get(purchase.playerId) !== purchase.rosterId) {
+      throw new Error(`Purchase ${index + 1} conflicts with its roster owner`);
+    }
+    if (!positionsByPlayer.has(purchase.playerId)) {
+      throw new Error(`Purchase ${index + 1} has an unknown player`);
+    }
+  });
+}
+
+function buildPositionState(
+  input: RunValuationEngineInput,
+  baseValues: ReadonlyMap<string, BasePlayerValue>,
+  positionsByPlayer: ReadonlyMap<string, Position>,
+): PositionState {
+  const draftedCounts = positionRecord();
+  const spend = positionRecord();
+  input.purchases.forEach((purchase) => {
+    if (purchase.rosterId !== input.myRosterId) {
+      return;
+    }
+    const position = positionsByPlayer.get(purchase.playerId)!;
+    draftedCounts[position] += 1;
+    spend[position] += purchase.amount;
+    if (!Number.isSafeInteger(spend[position])) {
+      throw new Error(`Total ${position} spend must be a safe integer`);
+    }
+  });
+
+  const desiredSlots = positionRecord();
+  POSITIONS.forEach((position) => {
+    desiredSlots[position] = Math.max(
+      0,
+      input.league.starters[position] - draftedCounts[position],
+    );
+  });
+
+  const surplus = positionRecord();
+  POSITIONS.forEach((position) => {
+    surplus[position] = Math.max(
+      0,
+      draftedCounts[position] - input.league.starters[position],
+    );
+  });
+  input.league.flex.forEach((slot) => {
+    let remaining = slot.count;
+    [...slot.eligible]
+      .sort((left, right) => POSITIONS.indexOf(left) - POSITIONS.indexOf(right))
+      .forEach((position) => {
+        const used = Math.min(remaining, surplus[position]);
+        surplus[position] -= used;
+        remaining -= used;
+      });
+    if (remaining > 0) {
+      slot.eligible.forEach((position) => {
+        desiredSlots[position] += remaining;
+      });
+    }
+  });
+
+  const leagueNeed = positionRecord();
+  input.teams.forEach((team) => {
+    const counts = positionRecord();
+    team.playerIds.forEach((playerId) => {
+      const position = positionsByPlayer.get(playerId);
+      if (position !== undefined) {
+        counts[position] += 1;
+      }
+    });
+    POSITIONS.forEach((position) => {
+      leagueNeed[position] += Math.max(
+        0,
+        input.league.starters[position] - counts[position],
+      );
+    });
+  });
+
+  const availableSupply = positionRecord();
+  baseValues.forEach((value) => {
+    availableSupply[value.position] += 1;
+  });
+  return {
+    draftedCounts,
+    spend,
+    desiredSlots,
+    leagueNeed,
+    availableSupply,
+  };
+}
+
+function maximumLegalBid(
+  remainingBudget: number,
+  openSlots: number,
+  minBid: number,
+): number {
+  if (openSlots === 0) {
+    return 0;
+  }
+  const result =
+    BigInt(remainingBudget) -
+    BigInt(Math.max(0, openSlots - 1)) * BigInt(minBid);
+  if (result <= 0n) {
+    return 0;
+  }
+  if (result > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error("Maximum legal bid must be a safe integer");
+  }
+  return Number(result);
+}
+
+function validateOverrides(input: RunValuationEngineInput): void {
+  Object.entries(input.strategy.valueOverrides).forEach(
+    ([playerId, override]) => {
+      if (!Number.isFinite(override) || override < 0) {
+        throw new Error(
+          `Value override for player ${playerId} must be finite and non-negative`,
+        );
+      }
+    },
+  );
+  if (!Array.isArray(input.strategy.spendingCurve)) {
+    throw new Error("Spending curve must be an array");
+  }
+  input.strategy.spendingCurve.forEach((multiplier, index) => {
+    if (!Number.isFinite(multiplier) || multiplier < 0) {
+      throw new Error(
+        `Spending curve multiplier ${index + 1} must be finite and non-negative`,
+      );
+    }
+  });
+  Object.entries(input.strategy.preferences).forEach(
+    ([playerId, preference]) => {
+      if (!["target", "avoid", "lock", "neutral"].includes(preference)) {
+        throw new Error(`Invalid preference for player ${playerId}`);
+      }
+    },
+  );
+}
+
+export function runValuationEngine(
+  input: RunValuationEngineInput,
+): Map<string, PlayerValuation> {
+  const matchingRosters = input.teams.filter(
+    (team) => team.rosterId === input.myRosterId,
+  );
+  if (matchingRosters.length !== 1) {
+    throw new Error("Exactly one matching user roster is required");
+  }
+  validateOverrides(input);
+  const positionsByPlayer = playerPositions(input);
+  validatePurchases(input, positionsByPlayer);
+
+  const baseValues = calculateBaseValues(input);
+  const positionState = buildPositionState(
+    input,
+    baseValues,
+    positionsByPlayer,
+  );
+  const rankedAll = [...baseValues.values()].sort(compareValues);
+  const byPosition = new Map(
+    POSITIONS.map((position) => [
+      position,
+      rankedAll.filter((value) => value.position === position),
+    ]),
+  );
+  const legalBid = maximumLegalBid(
+    matchingRosters[0].remainingBudget,
+    matchingRosters[0].openSlots,
+    input.league.minBid,
+  );
+  const result = new Map<string, PlayerValuation>();
+
+  [...baseValues.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .forEach(([playerId, base]) => {
+      const percentAdjustments = calculatePercentAdjustments(
+        base,
+        input.strategy,
+        positionState,
+        rankedAll,
+        byPosition.get(base.position)!,
+      );
+      const adjusted = applyPercentAdjustments(
+        base.baseValue,
+        percentAdjustments,
+      );
+      const override = input.strategy.valueOverrides[playerId];
+      if (override !== undefined) {
+        adjusted.adjustments.push({
+          code: "MANUAL",
+          label: "Manual override",
+          delta: Math.round((override - adjusted.adjustedValue) * 100) / 100,
+        });
+        adjusted.adjustedValue = override;
+      }
+      adjusted.adjustments = sortAdjustments(adjusted.adjustments);
+      const recommendedMaxBid = Math.max(
+        0,
+        Math.min(Math.round(adjusted.adjustedValue), legalBid),
+      );
+      result.set(playerId, {
+        ...base,
+        ...adjusted,
+        maximumLegalBid: legalBid,
+        recommendedMaxBid,
+        explanation: explainAdjustments(adjusted.adjustments),
+      });
+    });
+
+  return result;
+}
