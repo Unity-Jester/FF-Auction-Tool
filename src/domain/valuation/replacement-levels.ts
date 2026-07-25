@@ -207,7 +207,6 @@ function matchPlayers(
   players: CanonicalPlayer[],
   categories: CapacityCategory[],
   seedAssignments: ReadonlyMap<number, number> = new Map(),
-  lockedPlayerIndices: ReadonlySet<number> = new Set(),
 ): PlayerMatch {
   const categoryPlayers: number[][] = categories.map(() => []);
   const playerCategories: Array<number | undefined> = Array(
@@ -250,10 +249,7 @@ function matchPlayers(
         occupantIndex += 1
       ) {
         const occupyingPlayerIndex = occupants[occupantIndex];
-        if (
-          !lockedPlayerIndices.has(occupyingPlayerIndex) &&
-          augment(occupyingPlayerIndex, visitedCategories)
-        ) {
+        if (augment(occupyingPlayerIndex, visitedCategories)) {
           occupants[occupantIndex] = playerIndex;
           occupants.sort((left, right) => left - right);
           playerCategories[playerIndex] = categoryIndex;
@@ -465,7 +461,6 @@ export function calculateReplacementLevels({
     canonicalPlayers,
     benchCapacityCategories,
     benchSeeds,
-    new Set(benchSeeds.keys()),
   );
   const benchPlayerPositions = assignedPlayerPositions(
     canonicalPlayers,
@@ -479,7 +474,11 @@ export function calculateReplacementLevels({
   const benchThresholds = thresholdsAtRanks(benchAssignments, benchRanks);
   const benchPoints = { ...benchThresholds.points };
   POSITION_ORDER.forEach((position) => {
-    if (starterRanks[position] > 0) {
+    if (
+      starterRanks[position] > 0 &&
+      starterThresholds.playerIds[position] !== undefined &&
+      benchThresholds.playerIds[position] !== undefined
+    ) {
       benchPoints[position] = Math.min(
         benchPoints[position],
         starterThresholds.points[position],

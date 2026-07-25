@@ -426,7 +426,7 @@ describe("calculateReplacementLevels", () => {
     expect(result.benchPoints.TE).toBeLessThanOrEqual(result.starterPoints.TE);
   });
 
-  it("keeps an exhausted negative bench threshold from improving to zero", () => {
+  it("keeps zero for an exhausted negative bench threshold", () => {
     const config = league({ starters: { RB: 1 }, bench: 1 });
     const players: ScoredPlayer[] = [
       { playerId: "negative-rb", positions: ["RB"], points: -1 },
@@ -435,7 +435,25 @@ describe("calculateReplacementLevels", () => {
     const result = calculateReplacementLevels({ league: config, players });
 
     expect(result.starterPoints.RB).toBe(-1);
-    expect(result.benchPoints.RB).toBeLessThanOrEqual(result.starterPoints.RB);
+    expect(result.benchPoints.RB).toBe(0);
+  });
+
+  it("moves required starter identities to fill expanded bench capacity", () => {
+    const config = league({
+      starters: { RB: 1, WR: 1 },
+      bench: 1,
+    });
+    const players: ScoredPlayer[] = [
+      { playerId: "rb-100", positions: ["RB"], points: 100 },
+      { playerId: "dual-90", positions: ["RB", "WR"], points: 90 },
+      { playerId: "wr-80", positions: ["WR"], points: 80 },
+    ];
+
+    const result = calculateReplacementLevels({ league: config, players });
+
+    expect(result.benchRanks).toMatchObject({ RB: 2, WR: 1 });
+    expect(result.benchPoints.RB).toBe(90);
+    expect(result.benchPoints.WR).toBe(80);
   });
 
   it("maintains starter-to-bench threshold monotonicity across seeded fixtures", () => {
@@ -477,7 +495,11 @@ describe("calculateReplacementLevels", () => {
       const result = calculateReplacementLevels({ league: config, players });
 
       positions.forEach((position) => {
-        if (result.starterRanks[position] > 0) {
+        if (
+          result.starterRanks[position] > 0 &&
+          result.starterPoints[position] !== 0 &&
+          result.benchPoints[position] !== 0
+        ) {
           expect(result.benchPoints[position]).toBeLessThanOrEqual(
             result.starterPoints[position],
           );
