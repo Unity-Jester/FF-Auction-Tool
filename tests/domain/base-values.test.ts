@@ -243,7 +243,7 @@ describe("calculateBaseValues", () => {
     expect(() =>
       calculateBaseValues(
         baseInput({
-          league: league({ minBid: 2 }),
+          league: league({ minBid: 2, capKickerDefenseAtOne: false }),
           teams: [
             {
               rosterId: 1,
@@ -255,7 +255,7 @@ describe("calculateBaseValues", () => {
           ],
         }),
       ),
-    ).toThrow(/minimum.bid|reserve/i);
+    ).toThrow("Remaining budget cannot cover the minimum-bid reserve");
   });
 
   it("rejects a $1 K/DEF cap when the league minimum bid is higher", () => {
