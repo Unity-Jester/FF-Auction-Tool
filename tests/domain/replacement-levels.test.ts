@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { performance } from "node:perf_hooks";
 import { createLeagueConfig } from "@/domain/league/defaults";
 import type { Position } from "@/domain/league/types";
 import {
@@ -35,6 +36,23 @@ function scored(position: Position, points: number[]): ScoredPlayer[] {
     positions: [position],
     points: projection,
   }));
+}
+
+function seededRandom(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state * 1_664_525 + 1_013_904_223) >>> 0;
+    return state / 2 ** 32;
+  };
+}
+
+function shuffled<T>(values: T[], random: () => number): T[] {
+  const result = [...values];
+  for (let index = result.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(random() * (index + 1));
+    [result[index], result[swapIndex]] = [result[swapIndex], result[index]];
+  }
+  return result;
 }
 
 describe("calculateReplacementLevels", () => {
@@ -250,10 +268,10 @@ describe("calculateReplacementLevels", () => {
     const result = calculateReplacementLevels({ league: config, players });
 
     expect(result.benchRanks).toEqual({
-      QB: 3,
-      RB: 3,
-      WR: 0,
-      TE: 0,
+      QB: 2,
+      RB: 2,
+      WR: 1,
+      TE: 1,
       K: 0,
       DEF: 0,
     });
@@ -368,7 +386,7 @@ describe("calculateReplacementLevels", () => {
     expect(result.replacementPlayerIds).toMatchObject({ K: "specialist" });
   });
 
-  it("falls back to kicker and defense supply for a bench-only league", () => {
+  it("uses stable offensive bench ranks even when only kicker and defense projections exist", () => {
     const config = league({ bench: 3 });
     const players: ScoredPlayer[] = [
       { playerId: "def", positions: ["DEF"], points: 80 },
@@ -378,14 +396,194 @@ describe("calculateReplacementLevels", () => {
     const result = calculateReplacementLevels({ league: config, players });
 
     expect(result.benchRanks).toEqual({
+      QB: 1,
+      RB: 1,
+      WR: 1,
+      TE: 0,
+      K: 0,
+      DEF: 0,
+    });
+    expect(
+      Object.values(result.benchPoints).every((points) => points === 0),
+    ).toBe(true);
+  });
+
+  it("never improves a replacement threshold when bench capacity is added", () => {
+    const config = league({
+      starters: { TE: 1 },
+      flex: [{ count: 1, eligible: ["RB", "WR", "TE"] }],
+      bench: 1,
+    });
+    const players: ScoredPlayer[] = [
+      { playerId: "p0", positions: ["RB", "WR", "TE"], points: 23 },
+      { playerId: "p1", positions: ["RB", "WR"], points: 10 },
+      { playerId: "p2", positions: ["RB", "WR", "TE"], points: 28 },
+    ];
+
+    const result = calculateReplacementLevels({ league: config, players });
+
+    expect(result.starterPoints.TE).toBe(23);
+    expect(result.benchPoints.TE).toBeLessThanOrEqual(result.starterPoints.TE);
+  });
+
+  it("keeps an exhausted negative bench threshold from improving to zero", () => {
+    const config = league({ starters: { RB: 1 }, bench: 1 });
+    const players: ScoredPlayer[] = [
+      { playerId: "negative-rb", positions: ["RB"], points: -1 },
+    ];
+
+    const result = calculateReplacementLevels({ league: config, players });
+
+    expect(result.starterPoints.RB).toBe(-1);
+    expect(result.benchPoints.RB).toBeLessThanOrEqual(result.starterPoints.RB);
+  });
+
+  it("maintains starter-to-bench threshold monotonicity across seeded fixtures", () => {
+    const random = seededRandom(918_273);
+    const positionCombos: Position[][] = [
+      ["RB"],
+      ["WR"],
+      ["TE"],
+      ["RB", "WR"],
+      ["WR", "TE"],
+      ["RB", "TE"],
+      ["RB", "WR", "TE"],
+    ];
+
+    for (let fixture = 0; fixture < 150; fixture += 1) {
+      const starters = {
+        RB: Math.floor(random() * 3),
+        WR: Math.floor(random() * 3),
+        TE: Math.floor(random() * 2),
+      };
+      if (starters.RB + starters.WR + starters.TE === 0) {
+        starters.RB = 1;
+      }
+      const config = league({
+        starters,
+        bench: 1 + Math.floor(random() * 3),
+        flex:
+          random() < 0.7 ? [{ count: 1, eligible: ["RB", "WR", "TE"] }] : [],
+      });
+      const players = Array.from(
+        { length: 3 + Math.floor(random() * 7) },
+        (_, index): ScoredPlayer => ({
+          playerId: `fixture-${fixture}-player-${index}`,
+          positions:
+            positionCombos[Math.floor(random() * positionCombos.length)],
+          points: 10 + Math.floor(random() * 20),
+        }),
+      );
+      const result = calculateReplacementLevels({ league: config, players });
+
+      positions.forEach((position) => {
+        if (result.starterRanks[position] > 0) {
+          expect(result.benchPoints[position]).toBeLessThanOrEqual(
+            result.starterPoints[position],
+          );
+        }
+      });
+    }
+  });
+
+  it("preserves bench-only ranks with no player supply", () => {
+    const config = league({ teams: 3, bench: 3 });
+
+    const result = calculateReplacementLevels({
+      league: config,
+      players: [],
+    });
+
+    expect(result.benchRanks).toEqual({
+      QB: 3,
+      RB: 2,
+      WR: 2,
+      TE: 2,
+      K: 0,
+      DEF: 0,
+    });
+    expect(
+      Object.values(result.benchRanks).reduce((sum, rank) => sum + rank, 0),
+    ).toBe(9);
+    expect(result.benchPoints).toEqual({
       QB: 0,
       RB: 0,
       WR: 0,
       TE: 0,
-      K: 2,
-      DEF: 1,
+      K: 0,
+      DEF: 0,
     });
-    expect(result.benchPoints.K).toBe(0);
-    expect(result.benchPoints.DEF).toBe(80);
+  });
+
+  it("is deterministic across seeded player permutations", () => {
+    const config = league({
+      teams: 4,
+      starters: { QB: 1, RB: 2, WR: 2, TE: 1 },
+      flex: [
+        { count: 1, eligible: ["RB", "WR", "TE"] },
+        { count: 1, eligible: ["QB", "RB", "WR", "TE"] },
+      ],
+      bench: 6,
+    });
+    const positionCombos: Position[][] = [
+      ["QB"],
+      ["RB"],
+      ["WR"],
+      ["TE"],
+      ["RB", "WR"],
+      ["WR", "TE"],
+      ["QB", "RB"],
+    ];
+    const players = Array.from({ length: 120 }, (_, index): ScoredPlayer => ({
+      playerId: `permutation-${String(index).padStart(3, "0")}`,
+      positions: positionCombos[index % positionCombos.length],
+      points: 300 - Math.floor(index / 3),
+    }));
+    const expected = calculateReplacementLevels({ league: config, players });
+    const random = seededRandom(6_022_140_76);
+
+    for (let run = 0; run < 12; run += 1) {
+      expect(
+        calculateReplacementLevels({
+          league: config,
+          players: shuffled(players, random),
+        }),
+      ).toEqual(expected);
+    }
+  });
+
+  it("handles a warmed 600-player, 32-team dual-position league under 150ms median", () => {
+    const config = league({
+      teams: 32,
+      starters: { QB: 1, RB: 2, WR: 2, TE: 1, K: 1, DEF: 1 },
+      flex: [
+        { count: 2, eligible: ["RB", "WR", "TE"] },
+        { count: 1, eligible: ["QB", "RB", "WR", "TE"] },
+      ],
+      bench: 10,
+    });
+    const positionCombos: Position[][] = [
+      ["QB", "RB"],
+      ["RB", "WR"],
+      ["WR", "TE"],
+      ["RB", "TE"],
+      ["K", "DEF"],
+    ];
+    const players = Array.from({ length: 600 }, (_, index): ScoredPlayer => ({
+      playerId: `benchmark-${String(index).padStart(3, "0")}`,
+      positions: positionCombos[index % positionCombos.length],
+      points: 600 - index,
+    }));
+
+    for (let warmup = 0; warmup < 3; warmup += 1) {
+      calculateReplacementLevels({ league: config, players });
+    }
+    const samples = Array.from({ length: 5 }, () => {
+      const startedAt = performance.now();
+      calculateReplacementLevels({ league: config, players });
+      return performance.now() - startedAt;
+    }).sort((left, right) => left - right);
+
+    expect(samples[2]).toBeLessThan(150);
   });
 });

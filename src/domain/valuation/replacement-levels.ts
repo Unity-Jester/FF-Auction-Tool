@@ -23,9 +23,19 @@ type CanonicalPlayer = {
   points: number;
 };
 
-type CapacitySlot =
-  | { kind: "fixed"; eligible: Position[]; position: Position }
-  | { kind: "flex"; eligible: Position[] };
+type CapacityCategory =
+  | {
+      kind: "fixed";
+      eligible: Position[];
+      position: Position;
+      capacity: number;
+    }
+  | { kind: "flex"; eligible: Position[]; capacity: number };
+
+type PlayerMatch = {
+  categoryPlayers: number[][];
+  playerCategories: Array<number | undefined>;
+};
 
 type PositionThresholds = {
   points: Record<Position, number>;
@@ -122,20 +132,21 @@ function canonicalizePlayers(
     );
 }
 
-function fixedSlots(
+function fixedCategories(
   capacities: Readonly<Record<Position, number>>,
-): CapacitySlot[] {
-  return POSITION_ORDER.flatMap((position) =>
-    Array.from({ length: capacities[position] }, (): CapacitySlot => ({
+): CapacityCategory[] {
+  return POSITION_ORDER.filter((position) => capacities[position] > 0).map(
+    (position) => ({
       kind: "fixed",
       eligible: [position],
       position,
-    })),
+      capacity: capacities[position],
+    }),
   );
 }
 
-function starterSlots(league: LeagueConfig): {
-  slots: CapacitySlot[];
+function starterCategories(league: LeagueConfig): {
+  categories: CapacityCategory[];
   fixedRanks: Record<Position, number>;
 } {
   const fixedRanks = emptyPositionRecord();
@@ -167,51 +178,87 @@ function starterSlots(league: LeagueConfig): {
     }
   });
 
-  const flexSlots = [...flexCapacityBySignature.values()]
+  const flexCategories: CapacityCategory[] = [
+    ...flexCapacityBySignature.values(),
+  ]
     .sort(
       (left, right) =>
         left.eligible.length - right.eligible.length ||
         compareEligibility(left.eligible, right.eligible),
     )
-    .flatMap((category) =>
-      Array.from({ length: category.capacity }, (): CapacitySlot => ({
-        kind: "flex",
-        eligible: category.eligible,
-      })),
-    );
+    .map((category) => ({ kind: "flex", ...category }));
 
-  return { slots: [...fixedSlots(fixedRanks), ...flexSlots], fixedRanks };
+  return {
+    categories: [...fixedCategories(fixedRanks), ...flexCategories],
+    fixedRanks,
+  };
 }
 
-function canFillSlot(player: CanonicalPlayer, slot: CapacitySlot): boolean {
-  return slot.eligible.some((position) => player.positions.includes(position));
+function canFillCategory(
+  player: CanonicalPlayer,
+  category: CapacityCategory,
+): boolean {
+  return category.eligible.some((position) =>
+    player.positions.includes(position),
+  );
 }
 
 function matchPlayers(
   players: CanonicalPlayer[],
-  slots: CapacitySlot[],
-): Array<number | undefined> {
-  const slotPlayers: Array<number | undefined> = Array(slots.length).fill(
-    undefined,
+  categories: CapacityCategory[],
+  seedAssignments: ReadonlyMap<number, number> = new Map(),
+  lockedPlayerIndices: ReadonlySet<number> = new Set(),
+): PlayerMatch {
+  const categoryPlayers: number[][] = categories.map(() => []);
+  const playerCategories: Array<number | undefined> = Array(
+    players.length,
+  ).fill(undefined);
+  seedAssignments.forEach((categoryIndex, playerIndex) => {
+    categoryPlayers[categoryIndex].push(playerIndex);
+    playerCategories[playerIndex] = categoryIndex;
+  });
+  categoryPlayers.forEach((occupants) =>
+    occupants.sort((left, right) => left - right),
+  );
+  const eligibleCategories = players.map((player) =>
+    categories.flatMap((category, categoryIndex) =>
+      canFillCategory(player, category) ? [categoryIndex] : [],
+    ),
   );
 
-  function augment(playerIndex: number, visitedSlots: Set<number>): boolean {
-    for (let slotIndex = 0; slotIndex < slots.length; slotIndex += 1) {
-      if (
-        visitedSlots.has(slotIndex) ||
-        !canFillSlot(players[playerIndex], slots[slotIndex])
-      ) {
+  function augment(
+    playerIndex: number,
+    visitedCategories: Set<number>,
+  ): boolean {
+    for (const categoryIndex of eligibleCategories[playerIndex]) {
+      if (visitedCategories.has(categoryIndex)) {
         continue;
       }
 
-      visitedSlots.add(slotIndex);
-      const occupyingPlayer = slotPlayers[slotIndex];
-      if (
-        occupyingPlayer === undefined ||
-        augment(occupyingPlayer, visitedSlots)
-      ) {
-        slotPlayers[slotIndex] = playerIndex;
+      visitedCategories.add(categoryIndex);
+      const occupants = categoryPlayers[categoryIndex];
+      if (occupants.length < categories[categoryIndex].capacity) {
+        occupants.push(playerIndex);
+        occupants.sort((left, right) => left - right);
+        playerCategories[playerIndex] = categoryIndex;
         return true;
+      }
+
+      for (
+        let occupantIndex = 0;
+        occupantIndex < occupants.length;
+        occupantIndex += 1
+      ) {
+        const occupyingPlayerIndex = occupants[occupantIndex];
+        if (
+          !lockedPlayerIndices.has(occupyingPlayerIndex) &&
+          augment(occupyingPlayerIndex, visitedCategories)
+        ) {
+          occupants[occupantIndex] = playerIndex;
+          occupants.sort((left, right) => left - right);
+          playerCategories[playerIndex] = categoryIndex;
+          return true;
+        }
       }
     }
 
@@ -219,30 +266,49 @@ function matchPlayers(
   }
 
   players.forEach((_, playerIndex) => {
-    augment(playerIndex, new Set());
+    if (playerCategories[playerIndex] === undefined) {
+      augment(playerIndex, new Set());
+    }
   });
 
-  return slotPlayers;
+  return { categoryPlayers, playerCategories };
 }
 
 function selectedPosition(
   player: CanonicalPlayer,
-  slot: CapacitySlot,
+  category: CapacityCategory,
 ): Position {
-  if (slot.kind === "fixed") {
-    return slot.position;
+  if (category.kind === "fixed") {
+    return category.position;
   }
 
   return POSITION_ORDER.find(
     (position) =>
-      player.positions.includes(position) && slot.eligible.includes(position),
+      player.positions.includes(position) &&
+      category.eligible.includes(position),
   )!;
+}
+
+function assignedPlayerPositions(
+  players: CanonicalPlayer[],
+  categories: CapacityCategory[],
+  match: PlayerMatch,
+): Map<number, Position> {
+  const positionsByPlayer = new Map<number, Position>();
+  match.categoryPlayers.forEach((playerIndices, categoryIndex) => {
+    playerIndices.forEach((playerIndex) => {
+      positionsByPlayer.set(
+        playerIndex,
+        selectedPosition(players[playerIndex], categories[categoryIndex]),
+      );
+    });
+  });
+  return positionsByPlayer;
 }
 
 function playersByAssignedPosition(
   players: CanonicalPlayer[],
-  slots: CapacitySlot[],
-  slotPlayers: Array<number | undefined>,
+  positionsByPlayer: ReadonlyMap<number, Position>,
 ): Record<Position, CanonicalPlayer[]> {
   const assigned: Record<Position, CanonicalPlayer[]> = {
     QB: [],
@@ -253,14 +319,8 @@ function playersByAssignedPosition(
     DEF: [],
   };
 
-  slotPlayers.forEach((playerIndex, slotIndex) => {
-    if (playerIndex === undefined) {
-      return;
-    }
-
-    const player = players[playerIndex];
-    const position = selectedPosition(player, slots[slotIndex]);
-    assigned[position].push(player);
+  positionsByPlayer.forEach((position, playerIndex) => {
+    assigned[position].push(players[playerIndex]);
   });
   POSITION_ORDER.forEach((position) => {
     assigned[position].sort(
@@ -292,22 +352,9 @@ function thresholdsAtRanks(
   return { points, playerIds };
 }
 
-function supplyByPosition(
-  players: CanonicalPlayer[],
-): Record<Position, number> {
-  const supply = emptyPositionRecord();
-  players.forEach((player) => {
-    player.positions.forEach((position) => {
-      supply[position] += 1;
-    });
-  });
-  return supply;
-}
-
 function allocateBenchSlots(
   total: number,
   starterRanks: Readonly<Record<Position, number>>,
-  players: CanonicalPlayer[],
 ): Record<Position, number> {
   const allocations = emptyPositionRecord();
   if (total === 0) {
@@ -320,32 +367,21 @@ function allocateBenchSlots(
   const allDemand = POSITION_ORDER.filter(
     (position) => starterRanks[position] > 0,
   );
-  const supply = supplyByPosition(players);
-  const offensiveSupply = OFFENSIVE_POSITIONS.filter(
-    (position) => supply[position] > 0,
-  );
-  const allSupply = POSITION_ORDER.filter((position) => supply[position] > 0);
 
   const eligible =
     offensiveDemand.length > 0
       ? offensiveDemand
       : allDemand.length > 0
         ? allDemand
-        : offensiveSupply.length > 0
-          ? offensiveSupply
-          : allSupply;
-  if (eligible.length === 0) {
-    return allocations;
-  }
-
-  const weights =
-    offensiveDemand.length > 0 || allDemand.length > 0 ? starterRanks : supply;
+        : OFFENSIVE_POSITIONS;
+  const hasDemand = offensiveDemand.length > 0 || allDemand.length > 0;
   const totalWeight = eligible.reduce(
-    (sum, position) => sum + weights[position],
+    (sum, position) => sum + (hasDemand ? starterRanks[position] : 1),
     0,
   );
   const remainders = eligible.map((position) => {
-    const exact = (total * weights[position]) / totalWeight;
+    const weight = hasDemand ? starterRanks[position] : 1;
+    const exact = (total * weight) / totalWeight;
     const allocated = Math.floor(exact);
     allocations[position] = allocated;
     return { position, remainder: exact - allocated };
@@ -378,19 +414,26 @@ export function calculateReplacementLevels({
   draftedPlayerIds?: ReadonlySet<string>;
 }): ReplacementLevels {
   const canonicalPlayers = canonicalizePlayers(players, draftedPlayerIds);
-  const { slots, fixedRanks } = starterSlots(league);
-  const starterSlotPlayers = matchPlayers(canonicalPlayers, slots);
+  const { categories, fixedRanks } = starterCategories(league);
+  const starterMatch = matchPlayers(canonicalPlayers, categories);
+  const starterPlayerPositions = assignedPlayerPositions(
+    canonicalPlayers,
+    categories,
+    starterMatch,
+  );
   const starterAssignments = playersByAssignedPosition(
     canonicalPlayers,
-    slots,
-    starterSlotPlayers,
+    starterPlayerPositions,
   );
 
   const starterRanks = { ...fixedRanks };
-  slots.forEach((slot, slotIndex) => {
-    const playerIndex = starterSlotPlayers[slotIndex];
-    if (slot.kind === "flex" && playerIndex !== undefined) {
-      starterRanks[selectedPosition(canonicalPlayers[playerIndex], slot)] += 1;
+  categories.forEach((category, categoryIndex) => {
+    if (category.kind === "flex") {
+      starterMatch.categoryPlayers[categoryIndex].forEach((playerIndex) => {
+        starterRanks[
+          selectedPosition(canonicalPlayers[playerIndex], category)
+        ] += 1;
+      });
     }
   });
   const starterThresholds = thresholdsAtRanks(starterAssignments, starterRanks);
@@ -398,7 +441,6 @@ export function calculateReplacementLevels({
   const benchAllocations = allocateBenchSlots(
     league.bench * league.teams,
     starterRanks,
-    canonicalPlayers,
   );
   const benchRanks = emptyPositionRecord();
   POSITION_ORDER.forEach((position) => {
@@ -408,20 +450,48 @@ export function calculateReplacementLevels({
     );
   });
 
-  const benchCapacitySlots = fixedSlots(benchRanks);
-  const benchSlotPlayers = matchPlayers(canonicalPlayers, benchCapacitySlots);
+  const benchCapacityCategories = fixedCategories(benchRanks);
+  const benchCategoryByPosition = new Map(
+    benchCapacityCategories.map((category, categoryIndex) => [
+      category.kind === "fixed" ? category.position : undefined,
+      categoryIndex,
+    ]),
+  );
+  const benchSeeds = new Map<number, number>();
+  starterPlayerPositions.forEach((position, playerIndex) => {
+    benchSeeds.set(playerIndex, benchCategoryByPosition.get(position)!);
+  });
+  const benchMatch = matchPlayers(
+    canonicalPlayers,
+    benchCapacityCategories,
+    benchSeeds,
+    new Set(benchSeeds.keys()),
+  );
+  const benchPlayerPositions = assignedPlayerPositions(
+    canonicalPlayers,
+    benchCapacityCategories,
+    benchMatch,
+  );
   const benchAssignments = playersByAssignedPosition(
     canonicalPlayers,
-    benchCapacitySlots,
-    benchSlotPlayers,
+    benchPlayerPositions,
   );
   const benchThresholds = thresholdsAtRanks(benchAssignments, benchRanks);
+  const benchPoints = { ...benchThresholds.points };
+  POSITION_ORDER.forEach((position) => {
+    if (starterRanks[position] > 0) {
+      benchPoints[position] = Math.min(
+        benchPoints[position],
+        starterThresholds.points[position],
+      );
+    }
+  });
 
   return {
     starterRanks,
     benchRanks,
     starterPoints: starterThresholds.points,
-    benchPoints: benchThresholds.points,
+    benchPoints,
     replacementPlayerIds: starterThresholds.playerIds,
   };
 }
