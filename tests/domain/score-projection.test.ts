@@ -51,14 +51,28 @@ describe("scoreProjection", () => {
     expect(scoreProjection({}, standardScoring, "RB")).toBe(0);
   });
 
-  it("rounds negative totals to one decimal place", () => {
-    expect(
-      scoreProjection(
-        { interceptions: 1, fumblesLost: 1, rushYards: 1 },
-        { ...standardScoring, rushYard: 0.04 },
-        "QB",
-      ),
-    ).toBe(-4);
+  it("rounds negative totals at one-decimal boundaries", () => {
+    expect(scoreProjection({ interceptions: 1 }, { ...standardScoring, interception: -3.96 }, "QB")).toBe(
+      -4,
+    );
+    expect(scoreProjection({ interceptions: 1 }, { ...standardScoring, interception: -3.94 }, "QB")).toBe(
+      -3.9,
+    );
+  });
+
+  it("normalizes a small negative score rounded to zero into positive zero", () => {
+    const result = scoreProjection(
+      { interceptions: 1 },
+      { ...standardScoring, interception: -0.04 },
+      "QB",
+    );
+
+    expect(result).toBe(0);
+    expect(Object.is(result, -0)).toBe(false);
+  });
+
+  it("treats non-finite stat fields as zero", () => {
+    expect(scoreProjection({ passYards: NaN, rushYards: Infinity }, standardScoring, "QB")).toBe(0);
   });
 
   it("applies a reception bonus only for the supplied position", () => {

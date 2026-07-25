@@ -22,5 +22,6 @@ export function scoreProjection(
     statValue(stats.receivingTds) * scoring.receivingTd +
     statValue(stats.fumblesLost) * scoring.fumbleLost;
 
-  return Math.round(total * 10) / 10;
+  const rounded = Math.round(total * 10) / 10;
+  return Object.is(rounded, -0) ? 0 : rounded;
 }
