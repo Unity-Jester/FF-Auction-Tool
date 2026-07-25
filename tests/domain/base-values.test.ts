@@ -332,16 +332,83 @@ describe("calculateBaseValues", () => {
     ).toThrow(/capped|allocate/i);
   });
 
-  it("canonicalizes duplicates, ignores drafted and malformed players, and uses the first supported position", () => {
+  it("merges duplicate eligibility and values multi-position players independently of input order", () => {
+    const dualRows: ScoredPlayer[] = [
+      { playerId: "dual", positions: ["WR", "RB"], points: 80 },
+      { playerId: "dual", positions: ["TE"], points: 70 },
+    ];
+    const input = {
+      players: [...dualRows, player("rb-fill", "RB", 10)],
+      teams: [
+        {
+          rosterId: 1,
+          name: "One",
+          remainingBudget: 2,
+          openSlots: 2,
+          playerIds: [],
+        },
+      ],
+      replacementLevels: replacementLevels(
+        { RB: 20, WR: 40, TE: 40 },
+        { RB: 20, WR: 40, TE: 40 },
+      ),
+    };
+    const reversedInput = {
+      ...input,
+      players: [
+        {
+          ...dualRows[1],
+          positions: [...dualRows[1].positions].reverse(),
+        },
+        {
+          ...dualRows[0],
+          positions: [...dualRows[0].positions].reverse(),
+        },
+        player("rb-fill", "RB", 10),
+      ],
+    };
+
+    const values = calculateBaseValues(baseInput(input));
+    const reversedValues = calculateBaseValues(baseInput(reversedInput));
+
+    expect(values).toEqual(reversedValues);
+    expect(values.get("dual")).toMatchObject({
+      position: "RB",
+      points: 80,
+      blendedVorp: 60,
+    });
+  });
+
+  it("ties multi-position VORP by canonical position order", () => {
     const values = calculateBaseValues(
       baseInput({
         players: [
+          { playerId: "dual", positions: ["WR"], points: 80 },
+          { playerId: "dual", positions: ["RB"], points: 80 },
+        ],
+        teams: [
           {
-            playerId: "dual",
-            positions: ["INVALID", "WR", "RB"] as Position[],
-            points: 80,
+            rosterId: 1,
+            name: "One",
+            remainingBudget: 1,
+            openSlots: 1,
+            playerIds: [],
           },
-          { playerId: "dual", positions: ["RB"], points: 70 },
+        ],
+        replacementLevels: replacementLevels(
+          { RB: 20, WR: 20 },
+          { RB: 20, WR: 20 },
+        ),
+      }),
+    );
+
+    expect(values.get("dual")!.position).toBe("RB");
+  });
+
+  it("ignores drafted players, malformed projections, and unsupported positions", () => {
+    const values = calculateBaseValues(
+      baseInput({
+        players: [
           { playerId: "drafted", positions: ["RB"], points: 200 },
           { playerId: "nan", positions: ["RB"], points: Number.NaN },
           {
@@ -349,26 +416,21 @@ describe("calculateBaseValues", () => {
             positions: ["INVALID"] as unknown as Position[],
             points: 100,
           },
-          player("rb-fill", "RB", 10),
+          player("rb-valid", "RB", 10),
         ],
         teams: [
           {
             rosterId: 1,
             name: "One",
-            remainingBudget: 2,
-            openSlots: 2,
+            remainingBudget: 1,
+            openSlots: 1,
             playerIds: ["drafted"],
           },
         ],
-        replacementLevels: replacementLevels(
-          { RB: 0, WR: 0 },
-          { RB: 0, WR: 0 },
-        ),
       }),
     );
 
-    expect([...values.keys()].sort()).toEqual(["dual", "rb-fill"]);
-    expect(values.get("dual")).toMatchObject({ position: "WR", points: 80 });
+    expect([...values.keys()]).toEqual(["rb-valid"]);
   });
 
   it("rejects an insufficient player pool", () => {
@@ -409,6 +471,218 @@ describe("calculateBaseValues", () => {
       /team|budget|slots/i,
     );
   });
+
+  it("rejects duplicate roster IDs", () => {
+    expect(() =>
+      calculateBaseValues(
+        baseInput({
+          teams: [
+            {
+              rosterId: 1,
+              name: "One",
+              remainingBudget: 2,
+              openSlots: 1,
+              playerIds: [],
+            },
+            {
+              rosterId: 1,
+              name: "Duplicate",
+              remainingBudget: 2,
+              openSlots: 1,
+              playerIds: [],
+            },
+          ],
+        }),
+      ),
+    ).toThrow(/duplicate rosterId/i);
+  });
+
+  it("rejects duplicate player IDs within one roster", () => {
+    expect(() =>
+      calculateBaseValues(
+        baseInput({
+          teams: [
+            {
+              rosterId: 1,
+              name: "One",
+              remainingBudget: 2,
+              openSlots: 1,
+              playerIds: ["drafted", "drafted"],
+            },
+          ],
+        }),
+      ),
+    ).toThrow(/duplicate player ID.*roster/i);
+  });
+
+  it("rejects player IDs owned by more than one roster", () => {
+    expect(() =>
+      calculateBaseValues(
+        baseInput({
+          teams: [
+            {
+              rosterId: 1,
+              name: "One",
+              remainingBudget: 2,
+              openSlots: 1,
+              playerIds: ["drafted"],
+            },
+            {
+              rosterId: 2,
+              name: "Two",
+              remainingBudget: 2,
+              openSlots: 1,
+              playerIds: ["drafted"],
+            },
+          ],
+        }),
+      ),
+    ).toThrow(/owned by more than one roster/i);
+  });
+
+  it("allocates huge finite VORP without overflowing weights", () => {
+    const huge = Number.MAX_VALUE / 2;
+    const values = calculateBaseValues(
+      baseInput({
+        league: league({ capKickerDefenseAtOne: false }),
+        players: [
+          player("rb-a", "RB", huge),
+          player("rb-b", "RB", huge),
+          player("rb-c", "RB", huge),
+        ],
+        teams: [
+          {
+            rosterId: 1,
+            name: "One",
+            remainingBudget: 100,
+            openSlots: 3,
+            playerIds: [],
+          },
+        ],
+        replacementLevels: replacementLevels({ RB: 0 }, { RB: 0 }),
+      }),
+    );
+
+    expect(
+      [...values.values()].reduce((sum, value) => sum + value.displayValue, 0),
+    ).toBe(100);
+    expect(
+      [...values.values()].every((value) => Number.isFinite(value.baseValue)),
+    ).toBe(true);
+  });
+
+  it("allocates a safe near-limit budget exactly", () => {
+    const remainingBudget = Number.MAX_SAFE_INTEGER;
+    const values = calculateBaseValues(
+      baseInput({
+        league: league({
+          budget: remainingBudget,
+          capKickerDefenseAtOne: false,
+        }),
+        players: [
+          player("rb-a", "RB", 3),
+          player("rb-b", "RB", 2),
+          player("rb-c", "RB", 1),
+        ],
+        teams: [
+          {
+            rosterId: 1,
+            name: "One",
+            remainingBudget,
+            openSlots: 3,
+            playerIds: [],
+          },
+        ],
+        replacementLevels: replacementLevels({ RB: 0 }, { RB: 0 }),
+      }),
+    );
+
+    const displayTotal = [...values.values()].reduce(
+      (sum, value) => sum + value.displayValue,
+      0,
+    );
+    expect(Number.isSafeInteger(displayTotal)).toBe(true);
+    expect(displayTotal).toBe(remainingBudget);
+  });
+
+  it("does not overstate a vanishingly small normalized weight", () => {
+    const remainingBudget = Number.MAX_SAFE_INTEGER;
+    const values = calculateBaseValues(
+      baseInput({
+        league: league({
+          budget: remainingBudget,
+          capKickerDefenseAtOne: false,
+        }),
+        players: [
+          player("rb-huge", "RB", Number.MAX_VALUE / 2),
+          player("rb-tiny", "RB", 1),
+        ],
+        teams: [
+          {
+            rosterId: 1,
+            name: "One",
+            remainingBudget,
+            openSlots: 2,
+            playerIds: [],
+          },
+        ],
+        replacementLevels: replacementLevels({ RB: 0 }, { RB: 0 }),
+      }),
+    );
+
+    expect(values.get("rb-tiny")!.displayValue).toBe(1);
+    expect(values.get("rb-huge")!.displayValue).toBe(remainingBudget - 1);
+  });
+
+  it("rejects an unsafe aggregate remaining budget before allocation", () => {
+    expect(() =>
+      calculateBaseValues(
+        baseInput({
+          teams: [
+            {
+              rosterId: 1,
+              name: "One",
+              remainingBudget: Number.MAX_SAFE_INTEGER,
+              openSlots: 1,
+              playerIds: [],
+            },
+            {
+              rosterId: 2,
+              name: "Two",
+              remainingBudget: 1,
+              openSlots: 1,
+              playerIds: [],
+            },
+          ],
+        }),
+      ),
+    ).toThrow(/aggregate remaining budget.*safe integer/i);
+  });
+
+  it.each(["starterPoints", "benchPoints"] as const)(
+    "rejects non-finite replacement %s",
+    (field) => {
+      const levels = replacementLevels({ RB: 0 }, { RB: 0 });
+      levels[field].RB = Number.POSITIVE_INFINITY;
+
+      expect(() =>
+        calculateBaseValues(baseInput({ replacementLevels: levels })),
+      ).toThrow(/replacement.*finite/i);
+    },
+  );
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, 0, -1])(
+    "uses neutral inflation for invalid pre-draft value %s",
+    (preDraftValue) => {
+      const values = calculateBaseValues(
+        baseInput({
+          preDraftDisplayValues: new Map([["rb-elite", preDraftValue]]),
+        }),
+      );
+
+      expect(values.get("rb-elite")!.inflationMultiplier).toBe(1);
+    },
+  );
 
   it.each([Number.NaN, Number.POSITIVE_INFINITY, -0.01, 1.01])(
     "rejects invalid starterBudgetShare %s",

@@ -2,7 +2,6 @@ import type { TeamDraftState } from "../draft/types";
 import type { LeagueConfig, Position } from "../league/types";
 import type { StrategyConfig } from "../strategy/types";
 import type { ReplacementLevels, ScoredPlayer } from "./replacement-levels";
-import { allocateLargestRemainders } from "./round-money";
 
 const SUPPORTED_POSITIONS: ReadonlyArray<Position> = [
   "QB",
@@ -12,6 +11,7 @@ const SUPPORTED_POSITIONS: ReadonlyArray<Position> = [
   "K",
   "DEF",
 ];
+const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
 
 export type BasePlayerValue = {
   playerId: string;
@@ -37,7 +37,7 @@ export type CalculateBaseValuesInput = {
 
 type CanonicalPlayer = {
   playerId: string;
-  position: Position;
+  positions: Position[];
   points: number;
 };
 
@@ -50,22 +50,23 @@ function compareIds(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function firstSupportedPosition(
-  positions: ReadonlyArray<Position>,
-): Position | undefined {
-  return positions.find((position) => SUPPORTED_POSITIONS.includes(position));
-}
-
 function validateTeams(teams: ReadonlyArray<TeamDraftState>): {
   openSlots: number;
   remainingBudget: number;
   draftedPlayerIds: Set<string>;
 } {
-  let openSlots = 0;
-  let remainingBudget = 0;
+  let openSlots = 0n;
+  let remainingBudget = 0n;
   const draftedPlayerIds = new Set<string>();
+  const rosterIds = new Set<number>();
+  const playerOwners = new Map<string, number>();
 
   teams.forEach((team, index) => {
+    if (rosterIds.has(team.rosterId)) {
+      throw new Error(`Duplicate rosterId ${team.rosterId}`);
+    }
+    rosterIds.add(team.rosterId);
+
     if (!Number.isSafeInteger(team.openSlots) || team.openSlots < 0) {
       throw new Error(
         `Team ${index + 1} open slots must be a non-negative integer`,
@@ -83,54 +84,127 @@ function validateTeams(teams: ReadonlyArray<TeamDraftState>): {
       throw new Error(`Team ${index + 1} player IDs must be an array`);
     }
 
-    openSlots += team.openSlots;
-    remainingBudget += team.remainingBudget;
-    team.playerIds.forEach((playerId) => draftedPlayerIds.add(playerId));
+    openSlots += BigInt(team.openSlots);
+    remainingBudget += BigInt(team.remainingBudget);
+
+    const rosterPlayerIds = new Set<string>();
+    team.playerIds.forEach((playerId) => {
+      if (rosterPlayerIds.has(playerId)) {
+        throw new Error(
+          `Duplicate player ID ${playerId} within roster ${team.rosterId}`,
+        );
+      }
+      rosterPlayerIds.add(playerId);
+
+      const owner = playerOwners.get(playerId);
+      if (owner !== undefined) {
+        throw new Error(
+          `Player ID ${playerId} is owned by more than one roster`,
+        );
+      }
+      playerOwners.set(playerId, team.rosterId);
+      draftedPlayerIds.add(playerId);
+    });
   });
 
-  if (
-    !Number.isSafeInteger(openSlots) ||
-    !Number.isSafeInteger(remainingBudget)
-  ) {
-    throw new Error("Combined team state exceeds the supported integer range");
+  if (openSlots > MAX_SAFE_INTEGER_BIGINT) {
+    throw new Error("Aggregate open slots must be a safe integer");
+  }
+  if (remainingBudget > MAX_SAFE_INTEGER_BIGINT) {
+    throw new Error("Aggregate remaining budget must be a safe integer");
   }
 
-  return { openSlots, remainingBudget, draftedPlayerIds };
+  return {
+    openSlots: Number(openSlots),
+    remainingBudget: Number(remainingBudget),
+    draftedPlayerIds,
+  };
 }
 
 function canonicalizePlayers(
   players: ReadonlyArray<ScoredPlayer>,
   draftedPlayerIds: ReadonlySet<string>,
 ): CanonicalPlayer[] {
-  const byId = new Map<string, CanonicalPlayer>();
+  const byId = new Map<
+    string,
+    { playerId: string; positions: Set<Position>; points?: number }
+  >();
 
   players.forEach((player) => {
     if (
       typeof player.playerId !== "string" ||
       draftedPlayerIds.has(player.playerId) ||
-      !Number.isFinite(player.points) ||
       !Array.isArray(player.positions)
     ) {
       return;
     }
 
-    const position = firstSupportedPosition(player.positions);
-    if (position === undefined) {
+    const positions = SUPPORTED_POSITIONS.filter((position) =>
+      player.positions.includes(position),
+    );
+    if (positions.length === 0) {
       return;
     }
 
     const current = byId.get(player.playerId);
-    if (current === undefined || player.points > current.points) {
-      byId.set(player.playerId, {
-        playerId: player.playerId,
-        position,
-        points: player.points,
-      });
+    const canonical = current ?? {
+      playerId: player.playerId,
+      positions: new Set<Position>(),
+    };
+    positions.forEach((position) => canonical.positions.add(position));
+    if (
+      Number.isFinite(player.points) &&
+      (canonical.points === undefined || player.points > canonical.points)
+    ) {
+      canonical.points = player.points;
+    }
+    if (current === undefined) {
+      byId.set(player.playerId, canonical);
     }
   });
 
-  return [...byId.values()].sort((left, right) =>
-    compareIds(left.playerId, right.playerId),
+  return [...byId.values()]
+    .filter(
+      (
+        player,
+      ): player is {
+        playerId: string;
+        positions: Set<Position>;
+        points: number;
+      } => player.points !== undefined,
+    )
+    .map((player) => ({
+      playerId: player.playerId,
+      positions: SUPPORTED_POSITIONS.filter((position) =>
+        player.positions.has(position),
+      ),
+      points: player.points,
+    }))
+    .sort((left, right) => compareIds(left.playerId, right.playerId));
+}
+
+function vorp(points: number, replacementPoints: number): number {
+  const result = Math.max(0, points - replacementPoints);
+  if (!Number.isFinite(result)) {
+    throw new Error("Computed VORP must be finite");
+  }
+  return result;
+}
+
+function blendVorp(
+  starterVorp: number,
+  benchVorp: number,
+  starterBudgetShare: number,
+): number {
+  const maximum = Math.max(starterVorp, benchVorp);
+  if (maximum === 0) {
+    return 0;
+  }
+
+  return (
+    maximum *
+    ((starterVorp / maximum) * starterBudgetShare +
+      (benchVorp / maximum) * (1 - starterBudgetShare))
   );
 }
 
@@ -140,23 +214,35 @@ function valuePlayers(
   starterBudgetShare: number,
 ): ValuedPlayer[] {
   return players.map((player) => {
-    const starterVorp = Math.max(
-      0,
-      player.points - replacementLevels.starterPoints[player.position],
-    );
-    const benchVorp = Math.max(
-      0,
-      player.points - replacementLevels.benchPoints[player.position],
-    );
+    const values = player.positions.map((position) => {
+      const starterVorp = vorp(
+        player.points,
+        replacementLevels.starterPoints[position],
+      );
+      const benchVorp = vorp(
+        player.points,
+        replacementLevels.benchPoints[position],
+      );
+      return {
+        position,
+        starterVorp,
+        benchVorp,
+        blendedVorp: blendVorp(starterVorp, benchVorp, starterBudgetShare),
+      };
+    });
+    const selected = values.sort(
+      (left, right) =>
+        right.blendedVorp - left.blendedVorp ||
+        SUPPORTED_POSITIONS.indexOf(left.position) -
+          SUPPORTED_POSITIONS.indexOf(right.position),
+    )[0];
 
     return {
-      ...player,
-      starterVorp,
-      benchVorp,
-      blendedVorp:
-        starterVorp * starterBudgetShare + benchVorp * (1 - starterBudgetShare),
+      playerId: player.playerId,
+      points: player.points,
+      ...selected,
       replacementPlayerId:
-        replacementLevels.replacementPlayerIds[player.position],
+        replacementLevels.replacementPlayerIds[selected.position],
     };
   });
 }
@@ -166,6 +252,129 @@ function isCapped(player: ValuedPlayer, league: LeagueConfig): boolean {
     league.capKickerDefenseAtOne &&
     (player.position === "K" || player.position === "DEF")
   );
+}
+
+function validateReplacementLevels(replacementLevels: ReplacementLevels): void {
+  SUPPORTED_POSITIONS.forEach((position) => {
+    if (
+      !Number.isFinite(replacementLevels.starterPoints[position]) ||
+      !Number.isFinite(replacementLevels.benchPoints[position])
+    ) {
+      throw new Error(
+        `Replacement points for ${position} must be finite numbers`,
+      );
+    }
+  });
+}
+
+function normalizedWeights(players: ReadonlyArray<ValuedPlayer>): {
+  maximum: number;
+  sum: number;
+  byId: Map<string, number>;
+} {
+  const maximum = players.reduce(
+    (highest, player) => Math.max(highest, player.blendedVorp),
+    0,
+  );
+  const byId = new Map<string, number>();
+  let sum = 0;
+
+  players.forEach((player) => {
+    const normalized =
+      maximum > 0 && player.blendedVorp > 0 ? player.blendedVorp / maximum : 0;
+    byId.set(player.playerId, normalized);
+    sum += normalized;
+  });
+
+  return { maximum, sum, byId };
+}
+
+function exactDecimalWeight(value: number): {
+  coefficient: bigint;
+  exponent: number;
+} {
+  const [mantissa, exponentText] = value.toExponential(17).split("e");
+  const digits = mantissa.replace(".", "");
+  return {
+    coefficient: BigInt(digits),
+    exponent: Number(exponentText) - (digits.length - 1),
+  };
+}
+
+function allocateDisplayValues(
+  draftablePlayers: ReadonlyArray<ValuedPlayer>,
+  minBid: number,
+  extraPool: number,
+  normalizedWeightById: ReadonlyMap<string, number>,
+  fallbackPlayerId: string | undefined,
+): Map<string, number> {
+  const displayValues = new Map(
+    draftablePlayers.map((player) => [player.playerId, minBid]),
+  );
+  if (extraPool === 0) {
+    return displayValues;
+  }
+  if (fallbackPlayerId !== undefined) {
+    displayValues.set(fallbackPlayerId, minBid + extraPool);
+    return displayValues;
+  }
+
+  const decimalWeights = draftablePlayers.flatMap((player) => {
+    const normalizedWeight = normalizedWeightById.get(player.playerId) ?? 0;
+    if (normalizedWeight <= 0) {
+      return [];
+    }
+    return [
+      {
+        id: player.playerId,
+        ...exactDecimalWeight(normalizedWeight),
+      },
+    ];
+  });
+  const minimumExponent = decimalWeights.reduce(
+    (minimum, item) => Math.min(minimum, item.exponent),
+    0,
+  );
+  const scaledWeights = decimalWeights.map((item) => ({
+    id: item.id,
+    weight: item.coefficient * 10n ** BigInt(item.exponent - minimumExponent),
+  }));
+  const totalWeight = scaledWeights.reduce(
+    (total, item) => total + item.weight,
+    0n,
+  );
+  const extraPoolBigInt = BigInt(extraPool);
+  const quotas = scaledWeights.map((item) => {
+    const numerator = extraPoolBigInt * item.weight;
+    return {
+      id: item.id,
+      floor: numerator / totalWeight,
+      remainder: numerator % totalWeight,
+    };
+  });
+  const floorTotal = quotas.reduce((total, quota) => total + quota.floor, 0n);
+  const increments = Number(extraPoolBigInt - floorTotal);
+  const incrementedIds = new Set(
+    [...quotas]
+      .sort(
+        (left, right) =>
+          (left.remainder > right.remainder
+            ? -1
+            : left.remainder < right.remainder
+              ? 1
+              : 0) || compareIds(left.id, right.id),
+      )
+      .slice(0, increments)
+      .map((quota) => quota.id),
+  );
+
+  quotas.forEach((quota) => {
+    displayValues.set(
+      quota.id,
+      minBid + Number(quota.floor) + (incrementedIds.has(quota.id) ? 1 : 0),
+    );
+  });
+  return displayValues;
 }
 
 export function calculateBaseValues({
@@ -189,13 +398,15 @@ export function calculateBaseValues({
   ) {
     throw new Error("starterBudgetShare must be a finite number from 0 to 1");
   }
+  validateReplacementLevels(replacementLevels);
 
   const { openSlots, remainingBudget, draftedPlayerIds } = validateTeams(teams);
-  const minimumReserve = openSlots * league.minBid;
-  if (
-    !Number.isSafeInteger(minimumReserve) ||
-    remainingBudget < minimumReserve
-  ) {
+  const minimumReserveBigInt = BigInt(openSlots) * BigInt(league.minBid);
+  if (minimumReserveBigInt > MAX_SAFE_INTEGER_BIGINT) {
+    throw new Error("Aggregate minimum-bid reserve must be a safe integer");
+  }
+  const minimumReserve = Number(minimumReserveBigInt);
+  if (remainingBudget < minimumReserve) {
     throw new Error("Remaining budget cannot cover the minimum-bid reserve");
   }
 
@@ -224,10 +435,7 @@ export function calculateBaseValues({
     (player) => !isCapped(player, league),
   );
   const extraPool = remainingBudget - minimumReserve;
-  const positiveEligibleVorp = uncappedPlayers.reduce(
-    (sum, player) => sum + player.blendedVorp,
-    0,
-  );
+  const weights = normalizedWeights(uncappedPlayers);
 
   if (extraPool > 0 && uncappedPlayers.length === 0) {
     throw new Error(
@@ -236,7 +444,7 @@ export function calculateBaseValues({
   }
 
   let fallbackPlayerId: string | undefined;
-  if (extraPool > 0 && positiveEligibleVorp === 0) {
+  if (extraPool > 0 && weights.maximum === 0) {
     fallbackPlayerId = [...uncappedPlayers].sort(
       (left, right) =>
         right.points - left.points || compareIds(left.playerId, right.playerId),
@@ -252,8 +460,9 @@ export function calculateBaseValues({
 
     let extra = 0;
     if (!isCapped(player, league)) {
-      if (positiveEligibleVorp > 0 && player.blendedVorp > 0) {
-        extra = (extraPool * player.blendedVorp) / positiveEligibleVorp;
+      const normalizedWeight = weights.byId.get(player.playerId) ?? 0;
+      if (weights.sum > 0 && normalizedWeight > 0) {
+        extra = extraPool * (normalizedWeight / weights.sum);
       } else if (player.playerId === fallbackPlayerId) {
         extra = extraPool;
       }
@@ -261,17 +470,12 @@ export function calculateBaseValues({
     baseValues.set(player.playerId, league.minBid + extra);
   });
 
-  const roundedDraftableValues = allocateLargestRemainders(
-    draftablePlayers.map((player) => {
-      const baseValue = baseValues.get(player.playerId)!;
-      const floor = Math.floor(baseValue);
-      return {
-        id: player.playerId,
-        floor,
-        remainder: baseValue - floor,
-      };
-    }),
-    remainingBudget,
+  const roundedDraftableValues = allocateDisplayValues(
+    draftablePlayers,
+    league.minBid,
+    extraPool,
+    weights.byId,
+    fallbackPlayerId,
   );
 
   return new Map(
@@ -280,7 +484,9 @@ export function calculateBaseValues({
       const displayValue = roundedDraftableValues.get(player.playerId) ?? 0;
       const preDraftValue = preDraftDisplayValues?.get(player.playerId);
       const rawInflation =
-        preDraftValue !== undefined && preDraftValue > 0
+        Number.isFinite(preDraftValue) &&
+        preDraftValue !== undefined &&
+        preDraftValue > 0
           ? displayValue / preDraftValue
           : 1;
       const inflationMultiplier = Number.isFinite(rawInflation)
