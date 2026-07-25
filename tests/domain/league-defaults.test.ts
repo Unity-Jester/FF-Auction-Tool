@@ -42,7 +42,7 @@ describe("createLeagueConfig", () => {
     ).toThrow("Budget must cover every roster slot");
   });
 
-  it("rejects negative or fractional roster counts", () => {
+  it("rejects negative roster counts", () => {
     expect(() =>
       createLeagueConfig({
         teams: 12,
@@ -53,16 +53,32 @@ describe("createLeagueConfig", () => {
         receptionPoints: 0.5,
       }),
     ).toThrow();
+  });
+
+  it("rejects a fractional starter count", () => {
     expect(() =>
       createLeagueConfig({
         teams: 12,
         budget: 200,
         starters: { ...standardStarters, WR: 2.5 },
-        bench: -1,
+        bench: 6,
+        flex: standardFlex,
+        receptionPoints: 0.5,
+      }),
+    ).toThrow("WR starters must be a non-negative integer");
+  });
+
+  it("rejects a fractional flex count", () => {
+    expect(() =>
+      createLeagueConfig({
+        teams: 12,
+        budget: 200,
+        starters: standardStarters,
+        bench: 6,
         flex: [{ count: 1.5, eligible: ["RB", "WR"] }],
         receptionPoints: 0.5,
       }),
-    ).toThrow();
+    ).toThrow("Flex slot 1 count must be a non-negative integer");
   });
 
   it("rejects empty or duplicate flex eligibility", () => {
