@@ -77,4 +77,3 @@ export function createUserDraftsHandler(client: DiscoveryClient) {
 
 const client = new SleeperClient();
 export const GET = createUserDraftsHandler(client);
-

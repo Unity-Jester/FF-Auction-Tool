@@ -22,4 +22,3 @@ export function parseDraftReference(reference: string): string {
   if (!match) throw new Error("Invalid Sleeper draft");
   return match[1];
 }
-
