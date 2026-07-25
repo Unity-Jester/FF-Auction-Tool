@@ -258,6 +258,33 @@ describe("calculateBaseValues", () => {
     ).toThrow(/minimum.bid|reserve/i);
   });
 
+  it("rejects a $1 K/DEF cap when the league minimum bid is higher", () => {
+    expect(() =>
+      calculateBaseValues(
+        baseInput({
+          league: league({ minBid: 2, capKickerDefenseAtOne: true }),
+        }),
+      ),
+    ).toThrow("K/DEF $1 cap requires a $1 minimum bid");
+  });
+
+  it("supports a minimum bid above $1 when the K/DEF cap is disabled", () => {
+    const values = calculateBaseValues(
+      baseInput({
+        league: league({ minBid: 2, capKickerDefenseAtOne: false }),
+      }),
+    );
+    const draftable = [...values.values()].filter(
+      (value) => value.displayValue > 0,
+    );
+
+    expect(draftable).toHaveLength(7);
+    expect(draftable.every((value) => value.displayValue >= 2)).toBe(true);
+    expect(draftable.reduce((sum, value) => sum + value.displayValue, 0)).toBe(
+      34,
+    );
+  });
+
   it("preserves all dollars with a deterministic all-zero VORP fallback", () => {
     const values = calculateBaseValues(
       baseInput({

@@ -176,15 +176,18 @@ export function calculateBaseValues({
   replacementLevels,
   preDraftDisplayValues,
 }: CalculateBaseValuesInput): Map<string, BasePlayerValue> {
+  if (!Number.isSafeInteger(league.minBid) || league.minBid <= 0) {
+    throw new Error("League minimum bid must be a positive integer");
+  }
+  if (league.capKickerDefenseAtOne && league.minBid !== 1) {
+    throw new Error("K/DEF $1 cap requires a $1 minimum bid");
+  }
   if (
     !Number.isFinite(strategy.starterBudgetShare) ||
     strategy.starterBudgetShare < 0 ||
     strategy.starterBudgetShare > 1
   ) {
     throw new Error("starterBudgetShare must be a finite number from 0 to 1");
-  }
-  if (!Number.isSafeInteger(league.minBid) || league.minBid <= 0) {
-    throw new Error("League minimum bid must be a positive integer");
   }
 
   const { openSlots, remainingBudget, draftedPlayerIds } = validateTeams(teams);
