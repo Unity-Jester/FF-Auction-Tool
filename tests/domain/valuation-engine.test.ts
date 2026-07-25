@@ -248,6 +248,39 @@ describe("runValuationEngine", () => {
     ).toBe(false);
   });
 
+  it("does not treat an open flex slot as a fixed-position roster need", () => {
+    const original = input();
+    const myTeam = {
+      ...original.teams[0],
+      remainingBudget: 50,
+      openSlots: 1,
+      playerIds: ["owned-rb", "qb-1", "wr-1", "te-1"],
+    };
+    const result = runValuationEngine({
+      ...original,
+      league: {
+        ...original.league,
+        flex: [{ count: 1, eligible: ["RB", "WR", "TE"] }],
+      },
+      teams: [myTeam, original.teams[1]],
+      purchases: [
+        purchase("owned-rb", 1, 20, 1),
+        purchase("owned-wr", 2, 18, 2),
+        purchase("qb-1", 1, 15, 3),
+        purchase("wr-1", 1, 10, 4),
+        purchase("te-1", 1, 5, 5),
+      ],
+    });
+
+    for (const playerId of ["rb-1", "wr-2", "te-2"]) {
+      const adjustmentCodes = result
+        .get(playerId)!
+        .adjustments.map((adjustment) => adjustment.code);
+      expect(adjustmentCodes).not.toContain("ROSTER_NEED");
+      expect(adjustmentCodes).not.toContain("POSITION_BUDGET");
+    }
+  });
+
   it("adds scarcity at the remaining league fixed-starter boundary", () => {
     const scarce = input(
       {},
@@ -278,6 +311,21 @@ describe("runValuationEngine", () => {
     expect(() =>
       runValuationEngine(input({ valueOverrides: { "rb-1": -1 } })),
     ).toThrow(/override/i);
+  });
+
+  it("rounds a manual override before storing it and calculating its delta", () => {
+    const withoutOverride = runValuationEngine(input()).get("rb-1")!;
+    const overridden = runValuationEngine(
+      input({ valueOverrides: { "rb-1": 42.257 } }),
+    ).get("rb-1")!;
+    const manual = overridden.adjustments.find(
+      (adjustment) => adjustment.code === "MANUAL",
+    )!;
+
+    expect(overridden.adjustedValue).toBe(42.26);
+    expect(manual.delta).toBe(
+      Math.round((42.26 - withoutOverride.adjustedValue) * 100) / 100,
+    );
   });
 
   it("clamps combined percentage changes in both directions", () => {

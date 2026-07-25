@@ -43,6 +43,10 @@ function compareValues(left: BasePlayerValue, right: BasePlayerValue): number {
   );
 }
 
+function roundTwoDecimals(value: number): number {
+  return Number(value.toFixed(2));
+}
+
 function playerPositions(
   input: RunValuationEngineInput,
 ): Map<string, Position> {
@@ -166,29 +170,6 @@ function buildPositionState(
       0,
       input.league.starters[position] - draftedCounts[position],
     );
-  });
-
-  const surplus = positionRecord();
-  POSITIONS.forEach((position) => {
-    surplus[position] = Math.max(
-      0,
-      draftedCounts[position] - input.league.starters[position],
-    );
-  });
-  input.league.flex.forEach((slot) => {
-    let remaining = slot.count;
-    [...slot.eligible]
-      .sort((left, right) => POSITIONS.indexOf(left) - POSITIONS.indexOf(right))
-      .forEach((position) => {
-        const used = Math.min(remaining, surplus[position]);
-        surplus[position] -= used;
-        remaining -= used;
-      });
-    if (remaining > 0) {
-      slot.eligible.forEach((position) => {
-        desiredSlots[position] += remaining;
-      });
-    }
   });
 
   const leagueNeed = positionRecord();
@@ -319,12 +300,13 @@ export function runValuationEngine(
       );
       const override = input.strategy.valueOverrides[playerId];
       if (override !== undefined) {
+        const roundedOverride = roundTwoDecimals(override);
         adjusted.adjustments.push({
           code: "MANUAL",
           label: "Manual override",
-          delta: Math.round((override - adjusted.adjustedValue) * 100) / 100,
+          delta: roundTwoDecimals(roundedOverride - adjusted.adjustedValue),
         });
-        adjusted.adjustedValue = override;
+        adjusted.adjustedValue = roundedOverride;
       }
       adjusted.adjustments = sortAdjustments(adjusted.adjustments);
       const recommendedMaxBid = Math.max(
