@@ -7,6 +7,7 @@ import {
 } from "./base-values";
 import {
   applyPercentAdjustments,
+  calculatePositionScarcity,
   calculatePercentAdjustments,
   type PositionState,
   type ValueAdjustment,
@@ -173,31 +174,56 @@ function buildPositionState(
   eligiblePositions: ReadonlyMap<string, ReadonlyArray<Position>>,
 ): PositionState {
   const assignFixedPositions = (playerIds: ReadonlyArray<string>) => {
-    const remainingNeed = { ...input.league.starters };
     const counts = positionRecord();
     const assignments = new Map<string, Position>();
-    [...playerIds]
+    const slots = POSITIONS.flatMap((position) =>
+      Array.from({ length: input.league.starters[position] }, (_, index) => ({
+        position,
+        index,
+      })),
+    );
+    const players = [...playerIds]
       .map((playerId) => ({
         playerId,
         eligible: eligiblePositions.get(playerId) ?? [],
       }))
       .sort(
         (left, right) =>
-          left.eligible.length - right.eligible.length ||
-          left.playerId.localeCompare(right.playerId),
-      )
-      .forEach(({ playerId, eligible }) => {
-        const position = [...eligible].sort(
-          (left, right) =>
-            remainingNeed[right] - remainingNeed[left] ||
-            POSITIONS.indexOf(left) - POSITIONS.indexOf(right),
-        )[0];
-        if (position === undefined) {
-          return;
+          left.playerId.localeCompare(right.playerId) ||
+          left.eligible.length - right.eligible.length,
+      );
+    const eligibleSlots = new Map(
+      players.map((player) => [
+        player.playerId,
+        slots.flatMap((slot, slotIndex) =>
+          player.eligible.includes(slot.position) ? [slotIndex] : [],
+        ),
+      ]),
+    );
+    const slotOwners = new Map<number, string>();
+
+    const match = (playerId: string, visitedSlots: Set<number>): boolean => {
+      for (const slotIndex of eligibleSlots.get(playerId) ?? []) {
+        if (visitedSlots.has(slotIndex)) {
+          continue;
         }
+        visitedSlots.add(slotIndex);
+        const currentOwner = slotOwners.get(slotIndex);
+        if (currentOwner === undefined || match(currentOwner, visitedSlots)) {
+          slotOwners.set(slotIndex, playerId);
+          return true;
+        }
+      }
+      return false;
+    };
+
+    players.forEach((player) => match(player.playerId, new Set<number>()));
+    [...slotOwners.entries()]
+      .sort(([left], [right]) => left - right)
+      .forEach(([slotIndex, playerId]) => {
+        const position = slots[slotIndex].position;
         assignments.set(playerId, position);
         counts[position] += 1;
-        remainingNeed[position] = Math.max(0, remainingNeed[position] - 1);
       });
     return { assignments, counts };
   };
@@ -323,6 +349,12 @@ export function runValuationEngine(
       rankedAll.filter((value) => value.position === position),
     ]),
   );
+  const scarcityByPosition = new Map(
+    POSITIONS.map((position) => [
+      position,
+      calculatePositionScarcity(byPosition.get(position)!),
+    ]),
+  );
   const legalBid = maximumLegalBid(
     matchingRosters[0].remainingBudget,
     matchingRosters[0].openSlots,
@@ -339,6 +371,7 @@ export function runValuationEngine(
         positionState,
         rankedAll,
         byPosition.get(base.position)!,
+        scarcityByPosition.get(base.position)!,
       );
       const adjusted = applyPercentAdjustments(
         base.baseValue,

@@ -353,6 +353,42 @@ describe("runValuationEngine", () => {
     }
   });
 
+  it("does not add tier scarcity when league fixed demand is fully filled", () => {
+    const original = input();
+    const ownedTightEnds = [
+      player("owned-te-me", "TE", Number.NaN),
+      player("owned-te-them", "TE", Number.NaN),
+    ];
+    const zeroTightEnd = player("te-zero", "TE", 0);
+    const result = runValuationEngine({
+      ...original,
+      players: [
+        ...original.players.map((candidate) =>
+          candidate.playerId === "te-2"
+            ? { ...candidate, points: 20 }
+            : candidate,
+        ),
+        ...ownedTightEnds,
+        zeroTightEnd,
+      ],
+      teams: original.teams.map((team) => ({
+        ...team,
+        playerIds: [
+          ...team.playerIds,
+          team.rosterId === 1 ? "owned-te-me" : "owned-te-them",
+        ],
+      })),
+    });
+
+    for (const playerId of ["te-1", "te-2", "te-zero"]) {
+      expect(
+        result
+          .get(playerId)!
+          .adjustments.some((adjustment) => adjustment.code === "SCARCITY"),
+      ).toBe(false);
+    }
+  });
+
   it("uses an authoritative rostered keeper to fill a fixed starter slot", () => {
     const original = input();
     const keeper = player("keeper-te", "TE", Number.NaN);
@@ -405,6 +441,102 @@ describe("runValuationEngine", () => {
         .get("wr-1")!
         .adjustments.some((adjustment) => adjustment.code === "ROSTER_NEED"),
     ).toBe(true);
+  });
+
+  it("maximizes fixed slots when several keepers have overlapping eligibility", () => {
+    const original = input();
+    const keepers: ScoredPlayer[] = [
+      { playerId: "A", positions: ["QB", "RB"], points: Number.NaN },
+      { playerId: "B", positions: ["QB", "WR"], points: Number.NaN },
+      { playerId: "C", positions: ["QB", "WR"], points: Number.NaN },
+    ];
+    const run = (reverse: boolean) =>
+      runValuationEngine({
+        ...original,
+        league: {
+          ...original.league,
+          starters: { QB: 1, RB: 1, WR: 1, TE: 0, K: 0, DEF: 0 },
+        },
+        players: reverse
+          ? [...keepers, ...original.players].reverse()
+          : [...original.players, ...keepers],
+        teams: original.teams
+          .map((team) =>
+            team.rosterId === 1
+              ? {
+                  ...team,
+                  playerIds: reverse
+                    ? keepers.map((keeper) => keeper.playerId).reverse()
+                    : keepers.map((keeper) => keeper.playerId),
+                }
+              : team,
+          )
+          .reverse(),
+        purchases: [purchase("owned-wr", 2, 18, 1)],
+      });
+
+    for (const result of [run(false), run(true)]) {
+      for (const playerId of ["qb-1", "rb-1", "wr-1"]) {
+        expect(
+          result
+            .get(playerId)!
+            .adjustments.some(
+              (adjustment) => adjustment.code === "ROSTER_NEED",
+            ),
+        ).toBe(false);
+      }
+    }
+  });
+
+  it("counts keeper occupancy without inventing known position spend", () => {
+    const original = input();
+    const keeper = player("keeper-te-spend", "TE", Number.NaN);
+    const common = {
+      ...original,
+      league: {
+        ...original.league,
+        starters: { ...original.league.starters, TE: 2 },
+      },
+      players: [...original.players, keeper],
+      teams: original.teams.map((team) =>
+        team.rosterId === 1
+          ? { ...team, playerIds: [...team.playerIds, keeper.playerId] }
+          : team,
+      ),
+    };
+    const expectedRemainingTeValue = Math.max(
+      ...[...calculateBaseValues(common).values()]
+        .filter((value) => value.position === "TE")
+        .map((value) => value.baseValue),
+    );
+    const positionBudgets = {
+      ...common.strategy.positionBudgets,
+      TE: expectedRemainingTeValue,
+    };
+    const withoutPurchase = runValuationEngine({
+      ...common,
+      strategy: { ...common.strategy, positionBudgets },
+    });
+    const withPurchase = runValuationEngine({
+      ...common,
+      strategy: { ...common.strategy, positionBudgets },
+      purchases: [...common.purchases, purchase(keeper.playerId, 1, 10, 3)],
+    });
+
+    expect(
+      withoutPurchase
+        .get("te-1")!
+        .adjustments.some(
+          (adjustment) => adjustment.code === "POSITION_BUDGET",
+        ),
+    ).toBe(false);
+    expect(
+      withPurchase
+        .get("te-1")!
+        .adjustments.find(
+          (adjustment) => adjustment.code === "POSITION_BUDGET",
+        )!.delta,
+    ).toBeLessThan(0);
   });
 
   it("uses a valid manual override exactly and rejects an invalid override", () => {

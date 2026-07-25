@@ -29,6 +29,13 @@ export type PositionState = {
   leagueNeed: Record<Position, number>;
 };
 
+export type ValueTier = "ELITE" | "HIGH" | "MID" | "LOW";
+
+export type PositionScarcity = {
+  tierByPlayerId: ReadonlyMap<string, ValueTier>;
+  supplyByTier: Readonly<Record<ValueTier, number>>;
+};
+
 const PREFERENCE_EFFECTS = {
   target: { code: "TARGET", label: "Target", percent: 8 },
   avoid: { code: "AVOID", label: "Avoid", percent: -20 },
@@ -41,6 +48,42 @@ function clamp(value: number, minimum: number, maximum: number): number {
 
 function rankPercent(index: number, length: number): number {
   return length <= 1 ? 0 : index / (length - 1);
+}
+
+function valueTier(value: number, maximum: number): ValueTier {
+  const ratio = value / maximum;
+  return ratio >= 0.75
+    ? "ELITE"
+    : ratio >= 0.5
+      ? "HIGH"
+      : ratio >= 0.25
+        ? "MID"
+        : "LOW";
+}
+
+export function calculatePositionScarcity(
+  values: ReadonlyArray<BasePlayerValue>,
+): PositionScarcity {
+  const positiveValues = values.filter((value) => value.baseValue > 0);
+  const maximum = positiveValues.reduce(
+    (highest, value) => Math.max(highest, value.baseValue),
+    0,
+  );
+  const tierByPlayerId = new Map<string, ValueTier>();
+  const supplyByTier: Record<ValueTier, number> = {
+    ELITE: 0,
+    HIGH: 0,
+    MID: 0,
+    LOW: 0,
+  };
+  if (maximum > 0) {
+    positiveValues.forEach((value) => {
+      const tier = valueTier(value.baseValue, maximum);
+      tierByPlayerId.set(value.playerId, tier);
+      supplyByTier[tier] += 1;
+    });
+  }
+  return { tierByPlayerId, supplyByTier };
 }
 
 function spendingCurveParts(
@@ -84,13 +127,6 @@ function spendingCurveParts(
       });
     }
   } else if (strategy.archetype === "custom") {
-    strategy.spendingCurve.forEach((multiplier, index) => {
-      if (!Number.isFinite(multiplier) || multiplier < 0) {
-        throw new Error(
-          `Spending curve multiplier ${index + 1} must be finite and non-negative`,
-        );
-      }
-    });
     if (strategy.spendingCurve.length > 0) {
       const curveIndex = Math.min(allIndex, strategy.spendingCurve.length - 1);
       const multiplier = strategy.spendingCurve[curveIndex];
@@ -200,39 +236,24 @@ function needAdjustment(
 function scarcityAdjustment(
   player: BasePlayerValue,
   positionState: PositionState,
-  rankedAtPosition: ReadonlyArray<BasePlayerValue>,
+  scarcity: PositionScarcity,
 ): PercentAdjustment | undefined {
-  if (player.baseValue <= 0) {
+  const rawNeed = positionState.leagueNeed[player.position];
+  if (rawNeed <= 0) {
     return undefined;
   }
-  const positiveValues = rankedAtPosition.filter(
-    (value) => value.baseValue > 0,
-  );
-  const maximum = positiveValues[0]?.baseValue ?? 0;
-  if (maximum <= 0) {
+  const playerTier = scarcity.tierByPlayerId.get(player.playerId);
+  if (playerTier === undefined) {
     return undefined;
   }
-  const tier = (value: number): "Elite" | "High" | "Mid" | "Low" => {
-    const ratio = value / maximum;
-    return ratio >= 0.75
-      ? "Elite"
-      : ratio >= 0.5
-        ? "High"
-        : ratio >= 0.25
-          ? "Mid"
-          : "Low";
-  };
-  const playerTier = tier(player.baseValue);
-  const supply = positiveValues.filter(
-    (value) => tier(value.baseValue) === playerTier,
-  ).length;
-  const need = Math.max(1, positionState.leagueNeed[player.position]);
+  const supply = scarcity.supplyByTier[playerTier];
+  const need = Math.max(1, rawNeed);
   if (supply > need) {
     return undefined;
   }
   return {
     code: "SCARCITY",
-    label: `${playerTier} tier scarcity`,
+    label: `${playerTier[0]}${playerTier.slice(1).toLowerCase()} tier scarcity`,
     percent: clamp(((need - supply + 1) / need) * 10, 0, 10),
   };
 }
@@ -258,11 +279,12 @@ export function calculatePercentAdjustments(
   positionState: PositionState,
   rankedAll: ReadonlyArray<BasePlayerValue>,
   rankedAtPosition: ReadonlyArray<BasePlayerValue>,
+  scarcity: PositionScarcity,
 ): PercentAdjustment[] {
   return [
     positionBudgetAdjustment(player, strategy, positionState, rankedAtPosition),
     needAdjustment(player, positionState),
-    scarcityAdjustment(player, positionState, rankedAtPosition),
+    scarcityAdjustment(player, positionState, scarcity),
     ...spendingCurveParts(player, strategy, rankedAll, rankedAtPosition),
     preferenceAdjustment(player, strategy),
   ].filter((adjustment): adjustment is PercentAdjustment =>
