@@ -5,6 +5,11 @@ import { useRouter } from "next/navigation";
 
 import type { LeagueConfig, Position } from "@/domain/league/types";
 import type { PlayerPreference, StrategyConfig } from "@/domain/strategy/types";
+import { parseProjectionCsv } from "@/integrations/projections/csv-provider";
+import type {
+  CsvProjectionResult,
+  ProjectionPlayer,
+} from "@/integrations/projections/types";
 import { parsePublicAccountConfig } from "@/integrations/supabase/config";
 import { browserStrategyStorage } from "@/persistence/browser-strategy-repository";
 import type { SavedStrategy } from "@/persistence/saved-strategy-repository";
@@ -40,6 +45,12 @@ export function StrategyBuilder({
   const [savedCreatedAt, setSavedCreatedAt] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState("");
   const [saveError, setSaveError] = useState("");
+  const [csvProjectionOverrides, setCsvProjectionOverrides] = useState(
+    () => savedSession?.csvProjectionOverrides ?? [],
+  );
+  const [csvResult, setCsvResult] = useState<CsvProjectionResult | null>(null);
+  const [csvError, setCsvError] = useState("");
+  const [csvPending, setCsvPending] = useState(false);
   const [mutationPending, setMutationPending] = useState<{
     type: "save" | "remove";
     id?: string;
@@ -220,7 +231,7 @@ export function StrategyBuilder({
         ...strategy.preferences,
       },
       localCorrections: savedSession?.localCorrections ?? [],
-      csvProjectionOverrides: savedSession?.csvProjectionOverrides ?? [],
+      csvProjectionOverrides,
       savedAt: new Date().toISOString(),
     });
     if (!saved.ok) {
@@ -228,6 +239,34 @@ export function StrategyBuilder({
       return;
     }
     router.push(`/draft/${draftId}`);
+  };
+  const importProjectionCsv = async (
+    event: React.ChangeEvent<HTMLInputElement>,
+  ) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setCsvPending(true);
+    setCsvError("");
+    setCsvResult(null);
+    try {
+      const response = await fetch("/api/sleeper/players");
+      if (!response.ok) throw new Error("players");
+      const payload = (await response.json()) as {
+        players?: ProjectionPlayer[];
+      };
+      if (!Array.isArray(payload.players)) throw new Error("players");
+      const result = parseProjectionCsv(await file.text(), payload.players);
+      setCsvResult(result);
+      setCsvProjectionOverrides(result.matched);
+    } catch {
+      setCsvProjectionOverrides([]);
+      setCsvError(
+        "The CSV could not be imported. Check the file and try again.",
+      );
+    } finally {
+      setCsvPending(false);
+      event.target.value = "";
+    }
   };
   return (
     <section className="strategy-layout" aria-labelledby="strategy-title">
@@ -501,6 +540,56 @@ export function StrategyBuilder({
             {name} · Manual ${value}
           </p>
         ))}
+      </section>
+      <section className="projection-import" aria-labelledby="projection-import-title">
+        <div>
+          <p className="kicker">Optional projections</p>
+          <h2 id="projection-import-title">Projection CSV</h2>
+          <p className="section-note">
+            Match by player_id, or by name, team, and position. Supported stat
+            columns are pass_yd, pass_td, pass_int, rush_yd, rush_td, rec,
+            rec_yd, rec_td, and fum_lost.
+          </p>
+        </div>
+        <label>
+          Projection CSV
+          <input
+            aria-label="Projection CSV"
+            type="file"
+            accept=".csv,text/csv"
+            disabled={csvPending}
+            onChange={(event) => void importProjectionCsv(event)}
+          />
+        </label>
+        {csvPending ? <p role="status">Checking projection matches…</p> : null}
+        {csvError ? <p role="alert">{csvError}</p> : null}
+        {csvResult ? (
+          <div className="csv-report" role="status">
+            <strong>{csvResult.matched.length} matched</strong>
+            <span>{csvResult.unmatched.length} unmatched</span>
+            <span>{csvResult.ambiguous.length} ambiguous</span>
+            <span>{csvResult.duplicates.length} duplicate</span>
+            <span>{csvResult.unsupported.length} unsupported</span>
+            {[...csvResult.unmatched, ...csvResult.ambiguous].length ? (
+              <details>
+                <summary>Review rows needing attention</summary>
+                <ul>
+                  {[...csvResult.unmatched, ...csvResult.ambiguous].map(
+                    (row, index) => (
+                      <li key={`${row.sourceName}-${index}`}>
+                        {row.sourceName || "Unnamed row"} — {row.reason}
+                      </li>
+                    ),
+                  )}
+                </ul>
+              </details>
+            ) : null}
+          </div>
+        ) : csvProjectionOverrides.length ? (
+          <p role="status">
+            {csvProjectionOverrides.length} saved CSV overrides will be used.
+          </p>
+        ) : null}
       </section>
       <section className="saved-strategies" aria-labelledby="saved-strategies-title">
         <div>

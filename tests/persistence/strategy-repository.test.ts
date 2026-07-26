@@ -284,6 +284,23 @@ describe("saved strategy repository contract", () => {
     expect(ids.size).toBe(50);
   });
 
+  it("treats empty environment values as disabled guest mode", () => {
+    expect(() =>
+      parsePublicSupabaseConfig({
+        url: "",
+        publishableKey: "",
+        anonKey: "",
+      }),
+    ).not.toThrow();
+    expect(
+      parsePublicSupabaseConfig({
+        url: "",
+        publishableKey: "",
+        anonKey: "",
+      }),
+    ).toBeNull();
+  });
+
   it("prefers a publishable key while retaining legacy anon-key fallback", () => {
     expect(parsePublicSupabaseConfig({
       url: "https://project.supabase.co",

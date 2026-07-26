@@ -218,6 +218,48 @@
   border-bottom: 1px solid var(--color-line);
 }
 
+.projection-import {
+  display: grid;
+  gap: var(--space-4);
+  padding-block: var(--space-8);
+  border-bottom: 1px solid var(--color-line);
+}
+
+.projection-import > label {
+  display: grid;
+  gap: var(--space-2);
+  max-width: 32rem;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: .73rem;
+  text-transform: uppercase;
+}
+
+.projection-import input {
+  min-height: var(--target-size);
+  padding: var(--space-2);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.csv-report {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  flex-wrap: wrap;
+  color: var(--color-text-muted);
+}
+
+.csv-report strong {
+  color: var(--color-accent-text);
+}
+
+.csv-report details {
+  flex-basis: 100%;
+}
+
 .saved-strategies {
   display: grid;
   gap: var(--space-4);

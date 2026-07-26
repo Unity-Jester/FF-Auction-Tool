@@ -15,6 +15,7 @@ import {
   type SleeperNflState,
   type SleeperUser,
 } from "@/integrations/sleeper/schemas";
+import { fixtureDiscoveredDrafts } from "@/testing/e2e-fixtures";
 
 type Context = { params: Promise<{ username: string }> };
 type DiscoveryClient = {
@@ -73,6 +74,13 @@ export function createUserDraftsHandler(
         },
         { status: 400 },
       );
+    }
+
+    const fixtureDrafts = fixtureDiscoveredDrafts(username);
+    if (fixtureDrafts) {
+      return NextResponse.json(fixtureDrafts, {
+        headers: { "Cache-Control": "no-store" },
+      });
     }
 
     const rateLimit = await limiter.check(requestClientKey(request));

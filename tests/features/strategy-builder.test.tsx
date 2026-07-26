@@ -23,6 +23,7 @@ describe("StrategyBuilder", () => {
   afterEach(() => {
     window.localStorage.clear();
     push.mockClear();
+    vi.unstubAllGlobals();
   });
   it("switches to a stars-and-scrubs spending curve", async () => {
     const user = userEvent.setup();
@@ -196,5 +197,40 @@ describe("StrategyBuilder", () => {
       csvProjectionOverrides: [csv],
       preferences: { p3: "lock", "Bijan Robinson": "target" },
     }));
+  });
+
+  it("imports matched CSV projections and reports unmatched and ambiguous rows", async () => {
+    const user = userEvent.setup();
+    const draftId = "423456789012345678";
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify({
+        players: [
+          { playerId: "9509", name: "Bijan Robinson", team: "ATL", positions: ["RB"] },
+          { playerId: "a1", name: "A. Brown", team: "PHI", positions: ["WR"] },
+          { playerId: "a2", name: "A. Brown", team: "WAS", positions: ["WR"] },
+        ],
+      }))));
+    render(<StrategyBuilder draftId={draftId} league={league} />);
+    const file = new File([
+      [
+        "player_id,name,team,position,rush_yd,rec",
+        "9509,Bijan Robinson,ATL,RB,1450,72",
+        ",Unknown Player,ZZZ,WR,0,10",
+        ",A. Brown,,WR,0,80",
+      ].join("\n"),
+    ], "projections.csv", { type: "text/csv" });
+
+    await user.upload(
+      screen.getByLabelText("Projection CSV", { selector: "input" }),
+      file,
+    );
+
+    expect(await screen.findByText("1 matched")).toBeInTheDocument();
+    expect(screen.getByText("1 unmatched")).toBeInTheDocument();
+    expect(screen.getByText("1 ambiguous")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Enter draft room" }));
+    expect(loadSession(draftId)?.csvProjectionOverrides).toEqual([
+      expect.objectContaining({ playerId: "9509", source: "CSV override" }),
+    ]);
   });
 });

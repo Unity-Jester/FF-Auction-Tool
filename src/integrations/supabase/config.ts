@@ -17,11 +17,15 @@ export type RawPublicSupabaseConfig = {
   captchaSiteKey?: string;
 };
 
-const urlSchema = z.string().url().refine((value) => {
-  const parsed = new URL(value);
-  return parsed.protocol === "https:" ||
-    (parsed.protocol === "http:" &&
-      ["localhost", "127.0.0.1"].includes(parsed.hostname));
+const urlSchema = z.string().refine((value) => {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:" ||
+      (parsed.protocol === "http:" &&
+        ["localhost", "127.0.0.1"].includes(parsed.hostname));
+  } catch {
+    return false;
+  }
 });
 
 function normalizedKey(value: RawPublicSupabaseConfig): string {

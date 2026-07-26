@@ -152,18 +152,17 @@ export function DraftRoomView({
       activateTab(next);
     }
   };
-  const panel = (target: Tab, className: string, content: React.ReactNode, aside = false) => {
+  const panel = (target: Tab, className: string, content: React.ReactNode) => {
     if (isMobile && tab !== target) return null;
-    const Component = aside ? "aside" : "div";
     return (
-      <Component
+      <div
         id={`draft-panel-${target}`}
         role="tabpanel"
         aria-labelledby={`draft-tab-${target}`}
         className={`${className} ${show(target)}`}
       >
         {content}
-      </Component>
+      </div>
     );
   };
   return (
@@ -296,11 +295,9 @@ export function DraftRoomView({
         )}
         {panel("team", styles.teamRegion,
           <MyRoster model={model} onReverseCorrection={onReverseCorrection} onEditPurchase={onAddCorrection ? openCorrection : undefined} />,
-          true,
         )}
         {panel("league", styles.leagueRegion,
           <LeagueRosters model={model} onEditPurchase={onAddCorrection ? openCorrection : undefined} />,
-          true,
         )}
       </div>
     </div>
@@ -311,6 +308,16 @@ async function fetchAssets<T>(path: string): Promise<T> {
   const response = await fetch(path);
   if (!response.ok) throw new Error("Unable to load draft resources");
   return response.json() as Promise<T>;
+}
+
+function projectionLabel(snapshot: ProjectionSnapshot, hasCsv: boolean) {
+  const date = new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(snapshot.updatedAt));
+  return `${snapshot.source}${hasCsv ? " + CSV overrides" : ""} · Updated ${date}`;
 }
 
 function RosterSelector({
@@ -394,7 +401,10 @@ export function DraftRoom({ draftId }: { draftId: string }) {
       strategy: activeSession.strategy,
       preferences: activeSession.preferences,
       projections: [...projectionMap.values()],
-      projectionSource: activeSession.csvProjectionOverrides.length ? `${projections.data.source} + CSV overrides` : projections.data.source,
+      projectionSource: projectionLabel(
+        projections.data,
+        activeSession.csvProjectionOverrides.length > 0,
+      ),
       projectionStale: projections.data.stale,
       playerSnapshot: players.data,
       myRosterId: rosterId,

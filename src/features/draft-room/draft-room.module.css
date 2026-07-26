@@ -149,6 +149,13 @@
 .breakdownBody dd { margin: 0; color: var(--color-text); font-family: var(--font-mono); }
 .latest { gap: .65rem; margin-top: .75rem; color: var(--color-text-muted); font-size: .75rem; }
 .latest span:first-child { color: var(--color-accent-text); font-family: var(--font-mono); }
+.latest button, .leagueList details p button {
+  border: 0;
+  background: transparent;
+  color: var(--color-text);
+  text-decoration: underline;
+  text-underline-offset: .2rem;
+}
 .board { height: 100%; overflow: auto; }
 .boardTools {
   position: sticky;

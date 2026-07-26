@@ -21,6 +21,12 @@ import type {
   SleeperRoster,
   SleeperUser,
 } from "@/integrations/sleeper/schemas";
+import {
+  E2E_SNAKE_DRAFT_ID,
+  fixtureDraftResponse,
+  fixtureModeEnabled,
+  fixtureStateFromRequest,
+} from "@/testing/e2e-fixtures";
 
 type Context = { params: Promise<{ draftId: string }> };
 type DetailClient = {
@@ -91,6 +97,35 @@ export function createDraftHandler(
         { error: { code: "INVALID_DRAFT", message: "Invalid Sleeper draft" } },
         { status: 400 },
       );
+    }
+
+    if (fixtureModeEnabled() && draftId === E2E_SNAKE_DRAFT_ID) {
+      return NextResponse.json(
+        {
+          error: {
+            code: "UNSUPPORTED_DRAFT_TYPE",
+            message: "Snake drafts are not supported",
+          },
+        },
+        { status: 422, headers: { "Cache-Control": "no-store" } },
+      );
+    }
+    const fixtureResponse = fixtureDraftResponse(request, draftId);
+    if (fixtureResponse) {
+      if (fixtureStateFromRequest(request) === "offline") {
+        return NextResponse.json(
+          {
+            error: {
+              code: "UPSTREAM",
+              message: "Recorded fixture is temporarily offline",
+            },
+          },
+          { status: 502 },
+        );
+      }
+      return NextResponse.json(fixtureResponse, {
+        headers: { "Cache-Control": "no-store" },
+      });
     }
 
     const rateLimit = await limiter.check(requestClientKey(request));
