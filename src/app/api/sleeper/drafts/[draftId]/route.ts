@@ -94,6 +94,17 @@ export function createDraftHandler(
     }
 
     const rateLimit = await limiter.check(requestClientKey(request));
+    if (rateLimit.storeUnavailable) {
+      return NextResponse.json(
+        {
+          error: {
+            code: "RATE_LIMIT_UNAVAILABLE",
+            message: "Request protection unavailable",
+          },
+        },
+        { status: 503 },
+      );
+    }
     if (!rateLimit.allowed) {
       return NextResponse.json(
         {

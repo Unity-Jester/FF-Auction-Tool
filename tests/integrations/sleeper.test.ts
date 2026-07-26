@@ -6,8 +6,10 @@ import { parseDraftReference } from "@/integrations/sleeper/parse-draft-referenc
 import {
   createInMemoryRateLimitStore,
   createRateLimiter,
+  createRateLimitStoreFromEnv,
   createUpstashRateLimitStore,
   requestClientKey,
+  type RateLimitStore,
 } from "@/integrations/sleeper/rate-limiter";
 import { createDraftHandler } from "@/app/api/sleeper/drafts/[draftId]/route";
 import { createPlayersHandler } from "@/app/api/sleeper/players/route";
@@ -713,7 +715,39 @@ describe("Sleeper rate limiter", () => {
     );
   });
 
-  it("trusts platform IP headers and ignores spoofable forwarding by default", () => {
+  it("selects exactly one explicitly trusted client IP source", () => {
+    const mixedHeaders = {
+      "cf-connecting-ip": "203.0.113.4",
+      "x-vercel-forwarded-for": "2001:db8::1, 10.0.0.1",
+      "x-forwarded-for": "198.51.100.99",
+    };
+    expect(
+      requestClientKey(
+        new Request("http://localhost", { headers: mixedHeaders }),
+        { environment: { VERCEL: "1", TRUST_CLOUDFLARE: "true" } },
+      ),
+    ).toBe("2001:db8::1");
+    expect(
+      requestClientKey(
+        new Request("http://localhost", { headers: mixedHeaders }),
+        { environment: { TRUST_CLOUDFLARE: "true" } },
+      ),
+    ).toBe("203.0.113.4");
+    expect(
+      requestClientKey(
+        new Request("http://localhost", { headers: mixedHeaders }),
+        { environment: { TRUST_PROXY: "true" } },
+      ),
+    ).toBe("198.51.100.99");
+    expect(
+      requestClientKey(
+        new Request("http://localhost", { headers: mixedHeaders }),
+        { environment: {} },
+      ),
+    ).toBe("global");
+  });
+
+  it("does not fall through to spoofed headers when the selected source is absent", () => {
     expect(
       requestClientKey(
         new Request("http://localhost", {
@@ -722,33 +756,33 @@ describe("Sleeper rate limiter", () => {
             "x-forwarded-for": "198.51.100.99",
           },
         }),
-        { trustProxy: false },
-      ),
-    ).toBe("203.0.113.4");
-    expect(
-      requestClientKey(
-        new Request("http://localhost", {
-          headers: { "x-vercel-forwarded-for": "2001:db8::1, 10.0.0.1" },
-        }),
-        { trustProxy: false },
-      ),
-    ).toBe("2001:db8::1");
-    expect(
-      requestClientKey(
-        new Request("http://localhost", {
-          headers: { "x-forwarded-for": "198.51.100.99" },
-        }),
-        { trustProxy: false },
+        { environment: { VERCEL: "1", TRUST_CLOUDFLARE: "true" } },
       ),
     ).toBe("global");
     expect(
       requestClientKey(
         new Request("http://localhost", {
-          headers: { "x-forwarded-for": "198.51.100.99<script>" },
+          headers: {
+            "x-vercel-forwarded-for": "2001:db8::1",
+            "x-forwarded-for": "198.51.100.99<script>",
+          },
         }),
-        { trustProxy: true },
+        { environment: { TRUST_PROXY: "true" } },
       ),
     ).toBe("global");
+  });
+
+  it("fails loudly for partial Upstash environment configuration", () => {
+    expect(() =>
+      createRateLimitStoreFromEnv({
+        UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
+      }),
+    ).toThrow("Both UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN");
+    expect(() =>
+      createRateLimitStoreFromEnv({
+        UPSTASH_REDIS_REST_TOKEN: "token-only",
+      }),
+    ).toThrow("Both UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN");
   });
 });
 
@@ -1081,6 +1115,43 @@ describe("Sleeper routes", () => {
     expect(client.getDraftPicks).toHaveBeenCalledTimes(1);
   });
 
+  it("returns stable 503 without upstream calls when the shared limiter store fails", async () => {
+    const rejectingStore: RateLimitStore = {
+      increment: vi.fn(async () => {
+        throw new Error("redis secret failure");
+      }),
+      getBlockedUntil: vi.fn(async () => {
+        throw new Error("redis secret failure");
+      }),
+      setBlockedUntil: vi.fn(async () => {
+        throw new Error("redis secret failure");
+      }),
+    };
+    const limiter = createRateLimiter({ store: rejectingStore });
+    const client = {
+      getDraft: vi.fn(),
+      getDraftPicks: vi.fn(),
+      getLeague: vi.fn(),
+      getLeagueUsers: vi.fn(),
+      getLeagueRosters: vi.fn(),
+    };
+    const response = await createDraftHandler(client, limiter)(
+      new Request("http://localhost"),
+      { params: Promise.resolve({ draftId: auctionDraft.draft_id }) },
+    );
+    const serialized = JSON.stringify(await response.json());
+
+    expect(response.status).toBe(503);
+    expect(JSON.parse(serialized)).toEqual({
+      error: {
+        code: "RATE_LIMIT_UNAVAILABLE",
+        message: "Request protection unavailable",
+      },
+    });
+    expect(serialized).not.toContain("redis secret failure");
+    expect(client.getDraft).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["RATE_LIMITED", 429, "Sleeper rate limit reached"],
     ["UPSTREAM", 502, "Sleeper service unavailable"],
@@ -1154,6 +1225,39 @@ describe("Sleeper routes", () => {
     });
     expect(client.getDraft).toHaveBeenCalledTimes(1);
   });
+
+  it("preserves the original upstream 429 when circuit persistence fails", async () => {
+    const store: RateLimitStore = {
+      increment: vi.fn(async () => ({ count: 1, retryAfterSeconds: 60 })),
+      getBlockedUntil: vi.fn(async () => null),
+      setBlockedUntil: vi.fn(async () => {
+        throw new Error("redis secret failure");
+      }),
+    };
+    const limiter = createRateLimiter({ store });
+    const client = {
+      getDraft: vi.fn(async () => {
+        throw new SleeperError("RATE_LIMITED", 23);
+      }),
+      getDraftPicks: vi.fn(async () => []),
+      getLeague: vi.fn(),
+      getLeagueUsers: vi.fn(),
+      getLeagueRosters: vi.fn(),
+    };
+    const response = await createDraftHandler(client, limiter)(
+      new Request("http://localhost"),
+      { params: Promise.resolve({ draftId: auctionDraft.draft_id }) },
+    );
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("Retry-After")).toBe("23");
+    expect(await response.json()).toEqual({
+      error: {
+        code: "RATE_LIMITED",
+        message: "Sleeper rate limit reached",
+      },
+    });
+  });
 });
 
 describe("Sleeper player route", () => {
@@ -1189,5 +1293,37 @@ describe("Sleeper player route", () => {
       }),
     );
     expect(notModified.status).toBe(304);
+
+    for (const validator of [`W/${etag}`, `"unrelated", W/${etag}`, "*"]) {
+      const conditional = await GET(
+        new Request("http://localhost/api/sleeper/players", {
+          headers: { "if-none-match": validator },
+        }),
+      );
+      expect(conditional.status).toBe(304);
+    }
+  });
+
+  it("fails open when the limiter store is unavailable", async () => {
+    const rejectingStore: RateLimitStore = {
+      increment: vi.fn(async () => {
+        throw new Error("redis secret failure");
+      }),
+      getBlockedUntil: vi.fn(async () => {
+        throw new Error("redis secret failure");
+      }),
+      setBlockedUntil: vi.fn(async () => {
+        throw new Error("redis secret failure");
+      }),
+    };
+    const GET = createPlayersHandler(
+      createRateLimiter({ store: rejectingStore }),
+    );
+    const response = await GET(
+      new Request("http://localhost/api/sleeper/players"),
+    );
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).players.length).toBeGreaterThan(500);
   });
 });

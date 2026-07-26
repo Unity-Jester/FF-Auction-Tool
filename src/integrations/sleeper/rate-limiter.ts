@@ -3,6 +3,7 @@ import { isIP } from "node:net";
 export type RateLimitDecision = {
   allowed: boolean;
   retryAfterSeconds?: number;
+  storeUnavailable?: boolean;
 };
 
 export type RateLimitIncrement = {
@@ -19,7 +20,7 @@ export interface RateLimitStore {
 
 export type RateLimiter = {
   check(key: string): Promise<RateLimitDecision>;
-  blockFor(retryAfterSeconds: number): Promise<void>;
+  blockFor(retryAfterSeconds: number): Promise<boolean>;
   readonly size: number;
 };
 
@@ -200,35 +201,44 @@ export function createRateLimiter(
 
   return {
     async check(key: string): Promise<RateLimitDecision> {
-      const currentTime = now();
-      const blockedUntil = await store.getBlockedUntil();
-      if (blockedUntil !== null && blockedUntil > currentTime) {
-        return {
-          allowed: false,
-          retryAfterSeconds: Math.max(
-            1,
-            Math.ceil((blockedUntil - currentTime) / 1_000),
-          ),
-        };
+      try {
+        const currentTime = now();
+        const blockedUntil = await store.getBlockedUntil();
+        if (blockedUntil !== null && blockedUntil > currentTime) {
+          return {
+            allowed: false,
+            retryAfterSeconds: Math.max(
+              1,
+              Math.ceil((blockedUntil - currentTime) / 1_000),
+            ),
+          };
+        }
+        const increment = await store.increment(key, windowMs);
+        if (increment.count > limit) {
+          return {
+            allowed: false,
+            retryAfterSeconds: increment.retryAfterSeconds,
+          };
+        }
+        return { allowed: true };
+      } catch {
+        return { allowed: true, storeUnavailable: true };
       }
-      const increment = await store.increment(key, windowMs);
-      if (increment.count > limit) {
-        return {
-          allowed: false,
-          retryAfterSeconds: increment.retryAfterSeconds,
-        };
-      }
-      return { allowed: true };
     },
-    async blockFor(retryAfterSeconds: number): Promise<void> {
+    async blockFor(retryAfterSeconds: number): Promise<boolean> {
       const boundedSeconds = Math.min(
         300,
         Math.max(1, Math.ceil(retryAfterSeconds)),
       );
-      await store.setBlockedUntil(
-        now() + boundedSeconds * 1_000,
-        boundedSeconds * 1_000,
-      );
+      try {
+        await store.setBlockedUntil(
+          now() + boundedSeconds * 1_000,
+          boundedSeconds * 1_000,
+        );
+        return true;
+      } catch {
+        return false;
+      }
     },
     get size() {
       return store.size ?? 0;
@@ -244,26 +254,55 @@ function cleanIp(value: string | null): string | null {
 
 export function requestClientKey(
   request: Request,
-  options: { trustProxy?: boolean } = {},
+  options: {
+    environment?: Record<string, string | undefined>;
+  } = {},
 ): string {
-  const platformIp =
-    cleanIp(request.headers.get("cf-connecting-ip")) ??
-    cleanIp(request.headers.get("x-vercel-forwarded-for"));
-  if (platformIp) return platformIp;
-  const trustProxy = options.trustProxy ?? process.env.TRUST_PROXY === "true";
-  if (trustProxy) {
-    const forwarded = cleanIp(request.headers.get("x-forwarded-for"));
-    if (forwarded) return forwarded;
+  const environment = options.environment ?? process.env;
+  if (environment.VERCEL === "1") {
+    return cleanIp(request.headers.get("x-vercel-forwarded-for")) ?? "global";
+  }
+  if (environment.TRUST_CLOUDFLARE === "true") {
+    return cleanIp(request.headers.get("cf-connecting-ip")) ?? "global";
+  }
+  if (environment.TRUST_PROXY === "true") {
+    return cleanIp(request.headers.get("x-forwarded-for")) ?? "global";
   }
   return "global";
 }
 
-function defaultStore(): RateLimitStore {
-  const url = process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+export function createRateLimitStoreFromEnv(
+  environment: Record<string, string | undefined> = process.env,
+): RateLimitStore {
+  const url = environment.UPSTASH_REDIS_REST_URL;
+  const token = environment.UPSTASH_REDIS_REST_TOKEN;
+  if (Boolean(url) !== Boolean(token)) {
+    throw new Error(
+      "Both UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN must be configured together",
+    );
+  }
   return url && token
     ? createUpstashRateLimitStore({ url, token })
     : createInMemoryRateLimitStore();
 }
 
-export const sleeperRateLimiter = createRateLimiter({ store: defaultStore() });
+function defaultRateLimitStore(): RateLimitStore {
+  try {
+    return createRateLimitStoreFromEnv();
+  } catch {
+    // Partial shared-store configuration must not silently weaken protection.
+    // Upstream routes turn this unavailable store into a stable 503 response.
+    const unavailable = async (): Promise<never> => {
+      throw new Error("Shared rate-limit store is misconfigured");
+    };
+    return {
+      increment: unavailable,
+      getBlockedUntil: unavailable,
+      setBlockedUntil: unavailable,
+    };
+  }
+}
+
+export const sleeperRateLimiter = createRateLimiter({
+  store: defaultRateLimitStore(),
+});

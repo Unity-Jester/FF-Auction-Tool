@@ -12,6 +12,15 @@ const cacheControl = "public, s-maxage=86400, stale-while-revalidate=86400";
 const serializedSnapshot = JSON.stringify({ players: playerSnapshot });
 const etag = `"${createHash("sha256").update(serializedSnapshot).digest("hex")}"`;
 
+function matchesEtag(header: string | null): boolean {
+  if (!header) return false;
+  return header.split(",").some((candidate) => {
+    const validator = candidate.trim();
+    if (validator === "*") return true;
+    return validator.replace(/^W\//i, "") === etag;
+  });
+}
+
 export function createPlayersHandler(
   limiter: RateLimiter = sleeperRateLimiter,
 ) {
@@ -35,7 +44,7 @@ export function createPlayersHandler(
     }
 
     const headers = { "Cache-Control": cacheControl, ETag: etag };
-    if (request.headers.get("if-none-match") === etag) {
+    if (matchesEtag(request.headers.get("if-none-match"))) {
       return new NextResponse(null, { status: 304, headers });
     }
     return new NextResponse(serializedSnapshot, {
