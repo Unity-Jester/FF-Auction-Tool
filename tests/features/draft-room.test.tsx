@@ -438,6 +438,43 @@ describe("buildDraftRoomViewModel", () => {
     expect(result.teams[0]).toEqual(expect.objectContaining({ remainingBudget: 5, openSlots: 0 }));
   });
 
+  it("derives one stable pre-draft baseline so live inflation reacts to under- and overspend", () => {
+    const build = (amount: number) => {
+      const purchase = {
+        ...completed.purchases.find((candidate) => candidate.playerId === "qb1")!,
+        amount,
+        pickNo: 1,
+      };
+      const snapshot: DraftSnapshot = {
+        ...completed,
+        status: "drafting",
+        purchases: [purchase],
+      };
+      return buildDraftRoomViewModel({
+        snapshot,
+        league: snapshot.league,
+        strategy: defaultStrategy(snapshot.league),
+        preferences: {},
+        projections,
+        projectionSource: "Regression fixture",
+        projectionStale: false,
+        playerSnapshot: players,
+        myRosterId: 1,
+        localCorrections: [],
+        syncStatus: "fresh",
+        lastUpdatedAt: snapshot.lastUpdatedAt,
+      });
+    };
+
+    const underpaid = build(1);
+    const overpaid = build(199);
+
+    expect(underpaid.inflation!.league).toBeGreaterThan(1);
+    expect(overpaid.inflation!.league).toBeLessThan(1);
+    expect(underpaid.inflation!.byPosition.RB).toBeGreaterThan(1);
+    expect(overpaid.inflation!.byPosition.RB).toBeLessThan(1);
+  });
+
   it("surfaces a safe valuation reason when draft inputs are truly invalid", () => {
     const invalid: DraftSnapshot = {
       ...completed,
@@ -559,7 +596,7 @@ describe("buildDraftRoomViewModel", () => {
     ]);
   });
 
-  it("treats an active correction as a replacement of the original owner and price", () => {
+  it("keeps an authoritative Sleeper purchase and exposes a differing local correction as a conflict", () => {
     const active = { ...completed, status: "drafting" as const };
     const original = active.purchases[0];
     const correction = {
@@ -583,11 +620,22 @@ describe("buildDraftRoomViewModel", () => {
       lastUpdatedAt: active.lastUpdatedAt,
     });
 
-    expect(result.teams[0].players.some((player) => player.id === original.playerId)).toBe(false);
-    expect(result.teams[1].players).toContainEqual(
-      expect.objectContaining({ id: original.playerId, amount: 33, local: true }),
+    expect(result.teams[0].players).toContainEqual(
+      expect.objectContaining({
+        id: original.playerId,
+        amount: original.amount,
+        local: false,
+      }),
     );
+    expect(result.teams[1].players.some((player) => player.id === original.playerId)).toBe(false);
     expect(result.teams.flatMap((team) => team.players).filter((player) => player.id === original.playerId)).toHaveLength(1);
+    expect(result.ignoredCorrections).toContainEqual(
+      expect.objectContaining({
+        playerId: original.playerId,
+        amount: 33,
+        reason: expect.stringMatching(/authoritative.*does not change values/i),
+      }),
+    );
   });
 
   it("keeps purchased players with metadata but no projection in roster and position calculations", () => {

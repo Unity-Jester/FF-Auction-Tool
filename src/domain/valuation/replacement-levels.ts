@@ -75,6 +75,7 @@ function compareEligibility(
 function canonicalizePlayers(
   players: ScoredPlayer[],
   draftedPlayerIds: ReadonlySet<string>,
+  includePlayersWithoutFinitePoints = false,
 ): CanonicalPlayer[] {
   const byId = new Map<
     string,
@@ -116,20 +117,95 @@ function canonicalizePlayers(
         playerId: string;
         positions: Set<Position>;
         points: number;
-      } => player.points !== undefined && player.positions.size > 0,
+      } =>
+        (player.points !== undefined || includePlayersWithoutFinitePoints) &&
+        player.positions.size > 0,
     )
     .map((player) => ({
       playerId: player.playerId,
       positions: POSITION_ORDER.filter((position) =>
         player.positions.has(position),
       ),
-      points: player.points,
+      points: player.points ?? 0,
     }))
     .sort(
       (left, right) =>
         right.points - left.points ||
         comparePlayerIds(left.playerId, right.playerId),
     );
+}
+
+function remainingStarterCategories(
+  league: LeagueConfig,
+  allPlayers: ReadonlyArray<CanonicalPlayer>,
+  rosteredPlayerIdsByTeam: ReadonlyArray<ReadonlyArray<string>>,
+): { categories: CapacityCategory[]; fixedRanks: Record<Position, number>; occupiedBench: number } {
+  const byId = new Map(allPlayers.map((player) => [player.playerId, player]));
+  const perTeamLeague = { ...league, teams: 1 };
+  const template = starterCategories(perTeamLeague).categories;
+  const remainingBySignature = new Map<
+    string,
+    CapacityCategory
+  >();
+  let occupiedBench = 0;
+
+  Array.from({ length: league.teams }, (_, teamIndex) => {
+    const rosteredIds = rosteredPlayerIdsByTeam[teamIndex] ?? [];
+    const rostered = [...new Set(rosteredIds)]
+      .flatMap((playerId) => {
+        const player = byId.get(playerId);
+        return player === undefined ? [] : [player];
+      })
+      .sort(
+        (left, right) =>
+          comparePlayerIds(left.playerId, right.playerId),
+      );
+    const match = matchPlayers(rostered, template);
+    occupiedBench += Math.min(
+      league.bench,
+      Math.max(
+        0,
+        rostered.length -
+          match.playerCategories.filter((category) => category !== undefined)
+            .length,
+      ),
+    );
+
+    template.forEach((category, categoryIndex) => {
+      const remaining =
+        category.capacity - match.categoryPlayers[categoryIndex].length;
+      if (remaining <= 0) {
+        return;
+      }
+      const signature =
+        category.kind === "fixed"
+          ? `fixed:${category.position}`
+          : `flex:${category.eligible.join("|")}`;
+      const current = remainingBySignature.get(signature);
+      if (current === undefined) {
+        remainingBySignature.set(signature, { ...category, capacity: remaining });
+      } else {
+        current.capacity += remaining;
+      }
+    });
+  });
+
+  const categories = [...remainingBySignature.values()].sort((left, right) => {
+    if (left.kind !== right.kind) {
+      return left.kind === "fixed" ? -1 : 1;
+    }
+    return (
+      left.eligible.length - right.eligible.length ||
+      compareEligibility(left.eligible, right.eligible)
+    );
+  });
+  const fixedRanks = emptyPositionRecord();
+  categories.forEach((category) => {
+    if (category.kind === "fixed") {
+      fixedRanks[category.position] += category.capacity;
+    }
+  });
+  return { categories, fixedRanks, occupiedBench };
 }
 
 function fixedCategories(
@@ -404,13 +480,27 @@ export function calculateReplacementLevels({
   league,
   players,
   draftedPlayerIds = new Set<string>(),
+  rosteredPlayerIdsByTeam = [],
 }: {
   league: LeagueConfig;
   players: ScoredPlayer[];
   draftedPlayerIds?: ReadonlySet<string>;
+  rosteredPlayerIdsByTeam?: ReadonlyArray<ReadonlyArray<string>>;
 }): ReplacementLevels {
   const canonicalPlayers = canonicalizePlayers(players, draftedPlayerIds);
-  const { categories, fixedRanks } = starterCategories(league);
+  const allPlayers = canonicalizePlayers(
+    players,
+    new Set<string>(),
+    true,
+  );
+  const { categories, fixedRanks, occupiedBench } =
+    rosteredPlayerIdsByTeam.length > 0
+      ? remainingStarterCategories(
+          league,
+          allPlayers,
+          rosteredPlayerIdsByTeam,
+        )
+      : { ...starterCategories(league), occupiedBench: 0 };
   const starterMatch = matchPlayers(canonicalPlayers, categories);
   const starterPlayerPositions = assignedPlayerPositions(
     canonicalPlayers,
@@ -435,7 +525,7 @@ export function calculateReplacementLevels({
   const starterThresholds = thresholdsAtRanks(starterAssignments, starterRanks);
 
   const benchAllocations = allocateBenchSlots(
-    league.bench * league.teams,
+    Math.max(0, league.bench * league.teams - occupiedBench),
     starterRanks,
   );
   const benchRanks = emptyPositionRecord();

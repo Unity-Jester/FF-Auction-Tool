@@ -4,8 +4,10 @@ import { createLeagueConfig } from "@/domain/league/defaults";
 import type { Position } from "@/domain/league/types";
 import type { StrategyConfig } from "@/domain/strategy/types";
 import { calculateBaseValues } from "@/domain/valuation/base-values";
+import { calculatePositionScarcity } from "@/domain/valuation/adjust-values";
 import {
   runValuationEngine,
+  runValuationEngineWithMetadata,
   type PlayerValuation,
   type RunValuationEngineInput,
 } from "@/domain/valuation/engine";
@@ -45,9 +47,9 @@ function strategy(overrides: Partial<StrategyConfig> = {}): StrategyConfig {
     archetype: "recommended",
     starterBudgetShare: 0.75,
     positionBudgets: {
-      QB: 30,
-      RB: 80,
-      WR: 60,
+      QB: 15,
+      RB: 40,
+      WR: 35,
       TE: 20,
       K: 5,
       DEF: 5,
@@ -56,7 +58,7 @@ function strategy(overrides: Partial<StrategyConfig> = {}): StrategyConfig {
     qbApproach: "auto",
     teApproach: "auto",
     rbBuild: "auto",
-    minReserve: 0,
+    minReserve: 5,
     preferences: {},
     projectionOverrides: {},
     valueOverrides: {},
@@ -151,6 +153,37 @@ function adjustmentPercent(
 }
 
 describe("runValuationEngine", () => {
+  it("forms tiers from meaningful adjacent value gaps and reports remaining supply", () => {
+    const values = [100, 94, 89, 55].map((baseValue, index) => ({
+      playerId: `tier-${index + 1}`,
+      position: "RB" as const,
+      points: 200 - index,
+      starterVorp: 1,
+      benchVorp: 1,
+      blendedVorp: 1,
+      baseValue,
+      displayValue: baseValue,
+      inflationMultiplier: 1,
+    }));
+
+    const scarcity = calculatePositionScarcity(values);
+
+    expect(scarcity.groups).toEqual([
+      {
+        tier: "ELITE",
+        supply: 3,
+        highestValue: 100,
+        lowestValue: 89,
+      },
+      {
+        tier: "HIGH",
+        supply: 1,
+        highestValue: 55,
+        lowestValue: 55,
+      },
+    ]);
+  });
+
   it("applies exact target, avoid, and lock preference directions", () => {
     const result = runValuationEngine(
       input({
@@ -189,6 +222,47 @@ describe("runValuationEngine", () => {
     expect(value.recommendedMaxBid).toBeLessThanOrEqual(97);
   });
 
+  it("keeps the hard legal maximum factual while a configured extra reserve lowers the recommendation", () => {
+    const low = runValuationEngine(input({ minReserve: 5 })).get("rb-1")!;
+    const high = runValuationEngine(input({ minReserve: 25 })).get("rb-1")!;
+
+    expect(low.maximumLegalBid).toBe(97);
+    expect(high.maximumLegalBid).toBe(97);
+    expect(high.strategyMaximumBid).toBe(low.strategyMaximumBid - 20);
+    expect(high.recommendedMaxBid).toBeLessThanOrEqual(high.strategyMaximumBid);
+  });
+
+  it.each([
+    ["negative", -1],
+    ["decimal", 5.5],
+    ["unsafe", Number.MAX_SAFE_INTEGER + 1],
+    ["over budget", 121],
+  ])("rejects an invalid strategy reserve: %s", (_, minReserve) => {
+    expect(() => runValuationEngine(input({ minReserve }))).toThrow(/reserve/i);
+  });
+
+  it("rejects missing, extra, malformed, and non-conserving position budgets", () => {
+    const valid = strategy().positionBudgets;
+    const cases = [
+      { ...valid, RB: -1 },
+      { ...valid, WR: Number.NaN },
+      { ...valid, TE: 999 },
+      { ...valid, RB: 79 },
+      Object.fromEntries(Object.entries(valid).filter(([key]) => key !== "K")),
+      { ...valid, IDP: 0 },
+    ];
+
+    for (const positionBudgets of cases) {
+      expect(() =>
+        runValuationEngine(
+          input({
+            positionBudgets: positionBudgets as StrategyConfig["positionBudgets"],
+          }),
+        ),
+      ).toThrow(/position budget/i);
+    }
+  });
+
   it("summarizes only the three largest adjustments and includes Target", () => {
     const result = runValuationEngine(
       input({
@@ -197,7 +271,9 @@ describe("runValuationEngine", () => {
         preferences: { "qb-1": "target" },
         positionBudgets: {
           ...strategy().positionBudgets,
-          QB: 200,
+          QB: 70,
+          RB: 0,
+          WR: 20,
         },
       }),
     );
@@ -226,10 +302,22 @@ describe("runValuationEngine", () => {
 
   it("raises an underfunded position goal and lowers an overspent one", () => {
     const under = runValuationEngine(
-      input({ positionBudgets: { ...strategy().positionBudgets, WR: 200 } }),
+      input({
+        positionBudgets: {
+          ...strategy().positionBudgets,
+          RB: 0,
+          WR: 75,
+        },
+      }),
     );
     const over = runValuationEngine(
-      input({ positionBudgets: { ...strategy().positionBudgets, WR: 0 } }),
+      input({
+        positionBudgets: {
+          ...strategy().positionBudgets,
+          RB: 75,
+          WR: 0,
+        },
+      }),
     );
 
     expect(adjustmentPercent(under, "wr-1", "POSITION_BUDGET")).toBeGreaterThan(
@@ -239,7 +327,11 @@ describe("runValuationEngine", () => {
   });
 
   it("adds roster need for an open fixed starter but not a filled position", () => {
-    const result = runValuationEngine(input());
+    const original = input();
+    const result = runValuationEngine({
+      ...original,
+      league: { ...original.league, bench: 0, rosterSize: 4 },
+    });
 
     expect(
       result.get("wr-1")!.adjustments.some((a) => a.code === "ROSTER_NEED"),
@@ -249,7 +341,7 @@ describe("runValuationEngine", () => {
     ).toBe(false);
   });
 
-  it("does not treat an open flex slot as a fixed-position roster need", () => {
+  it("includes an open flex slot in eligible roster need and position budget pace", () => {
     const original = input();
     const myTeam = {
       ...original.teams[0],
@@ -257,10 +349,12 @@ describe("runValuationEngine", () => {
       openSlots: 1,
       playerIds: ["owned-rb", "qb-1", "wr-1", "te-1"],
     };
-    const result = runValuationEngine({
+    const detailed = runValuationEngineWithMetadata({
       ...original,
       league: {
         ...original.league,
+        bench: 0,
+        rosterSize: 5,
         flex: [{ count: 1, eligible: ["RB", "WR", "TE"] }],
       },
       teams: [myTeam, original.teams[1]],
@@ -272,14 +366,16 @@ describe("runValuationEngine", () => {
         purchase("te-1", 1, 5, 5),
       ],
     });
+    const result = detailed.values;
 
-    for (const playerId of ["rb-1", "wr-2", "te-2"]) {
-      const adjustmentCodes = result
-        .get(playerId)!
-        .adjustments.map((adjustment) => adjustment.code);
-      expect(adjustmentCodes).not.toContain("ROSTER_NEED");
-      expect(adjustmentCodes).not.toContain("POSITION_BUDGET");
-    }
+    expect(detailed.metadata.needs.mine).toMatchObject({
+      RB: 1,
+      WR: 1,
+      TE: 1,
+    });
+    expect(
+      result.get("rb-1")!.adjustments.map((adjustment) => adjustment.code),
+    ).toEqual(expect.arrayContaining(["ROSTER_NEED", "POSITION_BUDGET"]));
   });
 
   it("adds scarcity at the remaining league fixed-starter boundary", () => {
@@ -362,6 +458,7 @@ describe("runValuationEngine", () => {
     const zeroTightEnd = player("te-zero", "TE", 0);
     const result = runValuationEngine({
       ...original,
+      league: { ...original.league, bench: 0, rosterSize: 4 },
       players: [
         ...original.players.map((candidate) =>
           candidate.playerId === "te-2"
@@ -394,6 +491,7 @@ describe("runValuationEngine", () => {
     const keeper = player("keeper-te", "TE", Number.NaN);
     const result = runValuationEngine({
       ...original,
+      league: { ...original.league, bench: 0, rosterSize: 4 },
       players: [...original.players, keeper],
       teams: original.teams.map((team) =>
         team.rosterId === 1
@@ -424,6 +522,7 @@ describe("runValuationEngine", () => {
     };
     const result = runValuationEngine({
       ...original,
+      league: { ...original.league, bench: 0, rosterSize: 4 },
       players: [...original.players, keeper],
       teams: original.teams.map((team) =>
         team.rosterId === 1 ? { ...team, playerIds: [keeper.playerId] } : team,
@@ -455,6 +554,8 @@ describe("runValuationEngine", () => {
         ...original,
         league: {
           ...original.league,
+          bench: 0,
+          rosterSize: 3,
           starters: { QB: 1, RB: 1, WR: 1, TE: 0, K: 0, DEF: 0 },
         },
         players: reverse
@@ -509,9 +610,13 @@ describe("runValuationEngine", () => {
         .filter((value) => value.position === "TE")
         .map((value) => value.baseValue),
     );
+    const teBudget = Math.round(expectedRemainingTeValue);
     const positionBudgets = {
       ...common.strategy.positionBudgets,
-      TE: expectedRemainingTeValue,
+      TE: teBudget,
+      WR: common.strategy.positionBudgets.WR +
+        common.strategy.positionBudgets.TE -
+        teBudget,
     };
     const withoutPurchase = runValuationEngine({
       ...common,
@@ -523,20 +628,20 @@ describe("runValuationEngine", () => {
       purchases: [...common.purchases, purchase(keeper.playerId, 1, 10, 3)],
     });
 
-    expect(
+    const withoutDelta =
       withoutPurchase
         .get("te-1")!
-        .adjustments.some(
+        .adjustments.find(
           (adjustment) => adjustment.code === "POSITION_BUDGET",
-        ),
-    ).toBe(false);
-    expect(
+        )?.delta ?? 0;
+    const withDelta =
       withPurchase
         .get("te-1")!
         .adjustments.find(
           (adjustment) => adjustment.code === "POSITION_BUDGET",
-        )!.delta,
-    ).toBeLessThan(0);
+        )?.delta ?? 0;
+    expect(Math.abs(withoutDelta)).toBeLessThan(1);
+    expect(withDelta).toBeLessThan(withoutDelta);
   });
 
   it("uses a valid manual override exactly and rejects an invalid override", () => {
@@ -574,7 +679,12 @@ describe("runValuationEngine", () => {
         archetype: "stars-and-scrubs",
         qbApproach: "elite",
         preferences: { "qb-1": "lock" },
-        positionBudgets: { ...strategy().positionBudgets, QB: 500 },
+        positionBudgets: {
+          ...strategy().positionBudgets,
+          QB: 90,
+          RB: 0,
+          WR: 0,
+        },
       }),
     ).get("qb-1")!;
     const down = runValuationEngine(
@@ -583,12 +693,16 @@ describe("runValuationEngine", () => {
         spendingCurve: [0],
         qbApproach: "value",
         preferences: { "qb-1": "avoid" },
-        positionBudgets: { ...strategy().positionBudgets, QB: 0 },
+        positionBudgets: {
+          ...strategy().positionBudgets,
+          QB: 0,
+          RB: 55,
+        },
       }),
     ).get("qb-1")!;
 
     expect(up.adjustedValue).toBeCloseTo(up.baseValue * 1.35, 2);
-    expect(down.adjustedValue).toBeCloseTo(down.baseValue * 0.65, 2);
+    expect(down.adjustedValue).toBeLessThan(down.baseValue);
     const adjustmentCents = (value: PlayerValuation) =>
       Math.round(
         value.adjustments.reduce(

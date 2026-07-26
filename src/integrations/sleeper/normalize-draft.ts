@@ -394,17 +394,32 @@ export function normalizeDraft(input: NormalizeInput): NormalizedDraft {
   );
 
   const teamMetadata = sourceTeams(teamCount, draft, users, rosters);
+  const rosterById = new Map(rosters.map((roster) => [roster.roster_id, roster]));
   const snapshotTeams = teamMetadata.map((team) => {
     const teamPurchases = purchases.filter(
       (purchase) => purchase.rosterId === team.rosterId,
     );
+    const purchasedIds = new Set(teamPurchases.map((pick) => pick.playerId));
+    const unknownCostPlayerIds = [
+      ...new Set(
+        (rosterById.get(team.rosterId)?.players ?? []).flatMap((playerId) => {
+          const id = safeIdentifier(playerId);
+          return id === undefined || purchasedIds.has(id) ? [] : [id];
+        }),
+      ),
+    ].sort();
+    const playerIds = [
+      ...teamPurchases.map((pick) => pick.playerId),
+      ...unknownCostPlayerIds,
+    ];
     return {
       rosterId: team.rosterId,
       name: team.name,
       remainingBudget:
         budget - teamPurchases.reduce((sum, pick) => sum + pick.amount, 0),
-      openSlots: Math.max(0, config.rosterSize - teamPurchases.length),
-      playerIds: teamPurchases.map((pick) => pick.playerId),
+      openSlots: Math.max(0, config.rosterSize - playerIds.length),
+      playerIds,
+      ...(unknownCostPlayerIds.length > 0 ? { unknownCostPlayerIds } : {}),
     };
   });
 

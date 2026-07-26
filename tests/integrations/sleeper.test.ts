@@ -14,6 +14,7 @@ import {
 import { createDraftHandler } from "@/app/api/sleeper/drafts/[draftId]/route";
 import { createPlayersHandler } from "@/app/api/sleeper/players/route";
 import { createUserDraftsHandler } from "@/app/api/sleeper/users/[username]/drafts/route";
+import keeperRosterFixture from "../fixtures/sleeper/keeper-roster-without-pick.json";
 
 const auctionDraft = {
   draft_id: "123456789012345678",
@@ -150,6 +151,23 @@ describe("normalizeDraft", () => {
       userId: "u3",
       name: "Ada",
     });
+  });
+
+  it("preserves reliable roster-held ownership missing from the pick stream without inventing a price", () => {
+    const result = normalizeDraft({
+      draft: auctionDraft,
+      picks: keeperRosterFixture.picks,
+      league,
+      rosters: keeperRosterFixture.rosters,
+    });
+
+    expect(result.snapshot.teams[0]).toMatchObject({
+      playerIds: ["picked-player", "roster-held-keeper"],
+      unknownCostPlayerIds: ["roster-held-keeper"],
+      remainingBudget: 158,
+      openSlots: result.snapshot.league.rosterSize - 2,
+    });
+    expect(result.snapshot.purchases).toHaveLength(1);
   });
 
   it("rejects snake drafts with a stable code", () => {

@@ -4,7 +4,10 @@ function compareAdjustments(
   left: ValueAdjustment,
   right: ValueAdjustment,
 ): number {
+  const preferencePriority = (adjustment: ValueAdjustment) =>
+    ["TARGET", "AVOID", "LOCK", "MANUAL"].includes(adjustment.code) ? 0 : 1;
   return (
+    preferencePriority(left) - preferencePriority(right) ||
     Math.abs(right.delta) - Math.abs(left.delta) ||
     left.code.localeCompare(right.code) ||
     left.label.localeCompare(right.label)

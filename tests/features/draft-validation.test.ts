@@ -27,6 +27,25 @@ const snapshot = {
 };
 
 describe("draft response validation", () => {
+  it("accepts explicit unknown-cost ownership when it is a unique subset of the roster", () => {
+    const withKeeper = {
+      ...snapshot,
+      teams: snapshot.teams.map((team, index) =>
+        index === 0
+          ? {
+              ...team,
+              playerIds: ["roster-held-keeper"],
+              unknownCostPlayerIds: ["roster-held-keeper"],
+            }
+          : team,
+      ),
+    };
+
+    expect(parseDraftSnapshot(withKeeper, "draft-1").teams[0]).toMatchObject({
+      unknownCostPlayerIds: ["roster-held-keeper"],
+    });
+  });
+
   it("accepts a complete normalized API response for the requested draft", () => {
     expect(parseDraftApiResponse({ snapshot }, "draft-1")).toEqual(snapshot);
     expect(parseDraftSnapshot(snapshot, "draft-1")).toEqual(snapshot);

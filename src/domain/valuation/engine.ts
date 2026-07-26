@@ -10,6 +10,7 @@ import {
   calculatePositionScarcity,
   calculatePercentAdjustments,
   type PositionState,
+  type ValueTier,
   type ValueAdjustment,
 } from "./adjust-values";
 import { explainAdjustments, sortAdjustments } from "./explanations";
@@ -26,8 +27,40 @@ export type PlayerValuation = BasePlayerValue & {
   adjustments: ValueAdjustment[];
   adjustedValue: number;
   maximumLegalBid: number;
+  strategyMaximumBid: number;
   recommendedMaxBid: number;
   explanation: string;
+};
+
+export type ValuationMetadata = {
+  needs: {
+    mine: Record<Position, number>;
+    league: Record<Position, number>;
+  };
+  bestFitPositionsByPlayerId: Readonly<Record<string, Position[]>>;
+  tiersByPosition: Readonly<
+    Record<
+      Position,
+      ReadonlyArray<{
+        tier: ValueTier;
+        supply: number;
+        highestValue: number;
+        lowestValue: number;
+      }>
+    >
+  >;
+  blueprintProgress: {
+    filledByPosition: Record<Position, number>;
+    openByPosition: Record<Position, number>;
+    spendByPosition: Record<Position, number>;
+    budgetByPosition: Record<Position, number>;
+  };
+  budgetPace: {
+    remainingBudget: number;
+    hardLegalMaximum: number;
+    strategyMaximum: number;
+    configuredExtraReserve: number;
+  };
 };
 
 function positionRecord(initial = 0): Record<Position, number> {
@@ -173,15 +206,31 @@ function buildPositionState(
   selectedPositions: ReadonlyMap<string, Position>,
   eligiblePositions: ReadonlyMap<string, ReadonlyArray<Position>>,
 ): PositionState {
-  const assignFixedPositions = (playerIds: ReadonlyArray<string>) => {
+  const assignRoster = (playerIds: ReadonlyArray<string>) => {
     const counts = positionRecord();
     const assignments = new Map<string, Position>();
-    const slots = POSITIONS.flatMap((position) =>
-      Array.from({ length: input.league.starters[position] }, (_, index) => ({
-        position,
-        index,
-      })),
-    );
+    const slots = [
+      ...POSITIONS.flatMap((position) =>
+        Array.from({ length: input.league.starters[position] }, () => ({
+          eligible: [position] as Position[],
+          fixed: position,
+        })),
+      ),
+      ...[...input.league.flex]
+        .sort(
+          (left, right) =>
+            left.eligible.length - right.eligible.length ||
+            left.eligible.join("|").localeCompare(right.eligible.join("|")),
+        )
+        .flatMap((slot) =>
+          Array.from({ length: slot.count }, () => ({
+            eligible: POSITIONS.filter((position) =>
+              slot.eligible.includes(position),
+            ),
+            fixed: undefined,
+          })),
+        ),
+    ];
     const players = [...playerIds]
       .map((playerId) => ({
         playerId,
@@ -196,7 +245,9 @@ function buildPositionState(
       players.map((player) => [
         player.playerId,
         slots.flatMap((slot, slotIndex) =>
-          player.eligible.includes(slot.position) ? [slotIndex] : [],
+          slot.eligible.some((position) => player.eligible.includes(position))
+            ? [slotIndex]
+            : [],
         ),
       ]),
     );
@@ -221,25 +272,55 @@ function buildPositionState(
     [...slotOwners.entries()]
       .sort(([left], [right]) => left - right)
       .forEach(([slotIndex, playerId]) => {
-        const position = slots[slotIndex].position;
+        const slot = slots[slotIndex];
+        const selected = selectedPositions.get(playerId);
+        const position =
+          slot.fixed ??
+          (selected !== undefined && slot.eligible.includes(selected)
+            ? selected
+            : undefined) ??
+          slot.eligible.find((candidate) =>
+            (eligiblePositions.get(playerId) ?? []).includes(candidate),
+          )!;
         assignments.set(playerId, position);
         counts[position] += 1;
       });
-    return { assignments, counts };
+    const unmatched = players.filter(
+      (player) => !assignments.has(player.playerId),
+    ).length;
+    const openSlots = slots.filter(
+      (_, slotIndex) => !slotOwners.has(slotIndex),
+    );
+    const remainingBench = Math.max(
+      0,
+      input.league.bench - Math.min(input.league.bench, unmatched),
+    );
+    const needs = positionRecord();
+    openSlots.forEach((slot) => {
+      slot.eligible.forEach((position) => {
+        needs[position] += 1;
+      });
+    });
+    if (remainingBench > 0) {
+      POSITIONS.forEach((position) => {
+        needs[position] += remainingBench;
+      });
+    }
+    return { assignments, counts, needs };
   };
 
   const myTeam = input.teams.find(
     (team) => team.rosterId === input.myRosterId,
   )!;
-  const myFixedPositions = assignFixedPositions(myTeam.playerIds);
-  const draftedCounts = myFixedPositions.counts;
+  const myPositions = assignRoster(myTeam.playerIds);
+  const draftedCounts = myPositions.counts;
   const spend = positionRecord();
   input.purchases.forEach((purchase) => {
     if (purchase.rosterId !== input.myRosterId) {
       return;
     }
     const position =
-      myFixedPositions.assignments.get(purchase.playerId) ??
+      myPositions.assignments.get(purchase.playerId) ??
       selectedPositions.get(purchase.playerId)!;
     spend[position] += purchase.amount;
     if (!Number.isSafeInteger(spend[position])) {
@@ -247,22 +328,13 @@ function buildPositionState(
     }
   });
 
-  const desiredSlots = positionRecord();
-  POSITIONS.forEach((position) => {
-    desiredSlots[position] = Math.max(
-      0,
-      input.league.starters[position] - draftedCounts[position],
-    );
-  });
+  const desiredSlots = myPositions.needs;
 
   const leagueNeed = positionRecord();
   input.teams.forEach((team) => {
-    const counts = assignFixedPositions(team.playerIds).counts;
+    const needs = assignRoster(team.playerIds).needs;
     POSITIONS.forEach((position) => {
-      leagueNeed[position] += Math.max(
-        0,
-        input.league.starters[position] - counts[position],
-      );
+      leagueNeed[position] += needs[position];
     });
   });
 
@@ -295,6 +367,50 @@ function maximumLegalBid(
 }
 
 function validateOverrides(input: RunValuationEngineInput): void {
+  const rawPositionBudgets: unknown = input.strategy.positionBudgets;
+  if (
+    rawPositionBudgets === null ||
+    typeof rawPositionBudgets !== "object" ||
+    Array.isArray(rawPositionBudgets)
+  ) {
+    throw new Error("Position budgets must be an object");
+  }
+  const budgetKeys = Object.keys(rawPositionBudgets);
+  if (
+    budgetKeys.length !== POSITIONS.length ||
+    !POSITIONS.every((position) => budgetKeys.includes(position)) ||
+    budgetKeys.some((position) => !POSITIONS.includes(position as Position))
+  ) {
+    throw new Error("Position budgets must contain exactly the supported positions");
+  }
+  let totalPositionBudget = 0n;
+  POSITIONS.forEach((position) => {
+    const budget = input.strategy.positionBudgets[position];
+    if (!Number.isSafeInteger(budget) || budget < 0) {
+      throw new Error(
+        `Position budget for ${position} must be a non-negative safe integer`,
+      );
+    }
+    totalPositionBudget += BigInt(budget);
+  });
+  if (totalPositionBudget !== BigInt(input.league.budget)) {
+    throw new Error("Position budgets must conserve the league auction budget");
+  }
+  const mandatoryReserveBigInt =
+    BigInt(input.league.rosterSize) * BigInt(input.league.minBid);
+  if (mandatoryReserveBigInt > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error("Mandatory roster reserve must be a safe integer");
+  }
+  const mandatoryReserve = Number(mandatoryReserveBigInt);
+  if (
+    !Number.isSafeInteger(input.strategy.minReserve) ||
+    input.strategy.minReserve < mandatoryReserve ||
+    input.strategy.minReserve > input.league.budget
+  ) {
+    throw new Error(
+      `Strategy reserve must be a safe integer from ${mandatoryReserve} to ${input.league.budget}`,
+    );
+  }
   Object.entries(input.strategy.valueOverrides).forEach(
     ([playerId, override]) => {
       if (!Number.isFinite(override) || override < 0) {
@@ -323,9 +439,9 @@ function validateOverrides(input: RunValuationEngineInput): void {
   );
 }
 
-export function runValuationEngine(
+export function runValuationEngineWithMetadata(
   input: RunValuationEngineInput,
-): Map<string, PlayerValuation> {
+): { values: Map<string, PlayerValuation>; metadata: ValuationMetadata } {
   const matchingRosters = input.teams.filter(
     (team) => team.rosterId === input.myRosterId,
   );
@@ -360,6 +476,10 @@ export function runValuationEngine(
     matchingRosters[0].openSlots,
     input.league.minBid,
   );
+  const configuredExtraReserve =
+    input.strategy.minReserve -
+    input.league.rosterSize * input.league.minBid;
+  const strategyBid = Math.max(0, legalBid - configuredExtraReserve);
   const result = new Map<string, PlayerValuation>();
 
   [...baseValues.entries()]
@@ -390,16 +510,59 @@ export function runValuationEngine(
       adjusted.adjustments = sortAdjustments(adjusted.adjustments);
       const recommendedMaxBid = Math.max(
         0,
-        Math.min(Math.round(adjusted.adjustedValue), legalBid),
+        Math.min(Math.round(adjusted.adjustedValue), strategyBid),
       );
       result.set(playerId, {
         ...base,
         ...adjusted,
         maximumLegalBid: legalBid,
+        strategyMaximumBid: strategyBid,
         recommendedMaxBid,
         explanation: explainAdjustments(adjusted.adjustments),
       });
     });
 
-  return result;
+  const bestFitPositionsByPlayerId = Object.fromEntries(
+    [...playerContext.eligiblePositions.entries()].map(
+      ([playerId, eligible]) => [
+        playerId,
+        eligible.filter((position) => positionState.desiredSlots[position] > 0),
+      ],
+    ),
+  );
+  const tiersByPosition = Object.fromEntries(
+    POSITIONS.map((position) => [
+      position,
+      scarcityByPosition.get(position)!.groups,
+    ]),
+  ) as ValuationMetadata["tiersByPosition"];
+  return {
+    values: result,
+    metadata: {
+      needs: {
+        mine: { ...positionState.desiredSlots },
+        league: { ...positionState.leagueNeed },
+      },
+      bestFitPositionsByPlayerId,
+      tiersByPosition,
+      blueprintProgress: {
+        filledByPosition: { ...positionState.draftedCounts },
+        openByPosition: { ...positionState.desiredSlots },
+        spendByPosition: { ...positionState.spend },
+        budgetByPosition: { ...input.strategy.positionBudgets },
+      },
+      budgetPace: {
+        remainingBudget: matchingRosters[0].remainingBudget,
+        hardLegalMaximum: legalBid,
+        strategyMaximum: strategyBid,
+        configuredExtraReserve,
+      },
+    },
+  };
+}
+
+export function runValuationEngine(
+  input: RunValuationEngineInput,
+): Map<string, PlayerValuation> {
+  return runValuationEngineWithMetadata(input).values;
 }

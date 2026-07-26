@@ -717,4 +717,21 @@ describe("calculateBaseValues", () => {
     expect(input.replacementLevels).toEqual(before.replacementLevels);
     expect([...input.preDraftDisplayValues!]).toEqual(before.preDraft);
   });
+
+  it("treats zero open slots as terminal even when Sleeper status still lags", () => {
+    const input = baseInput();
+    const values = calculateBaseValues({
+      ...input,
+      teams: input.teams.map((team) => ({
+        ...team,
+        openSlots: 0,
+        playerIds: [],
+      })),
+      auctionComplete: false,
+    });
+
+    expect([...values.values()].every((value) => value.displayValue === 0)).toBe(
+      true,
+    );
+  });
 });

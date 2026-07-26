@@ -17,6 +17,8 @@ export type TeamDraftState = {
   remainingBudget: number;
   openSlots: number;
   playerIds: string[];
+  /** Authoritative roster ownership for which Sleeper supplies no auction price. */
+  unknownCostPlayerIds?: string[];
 };
 
 export type DraftSnapshot = {

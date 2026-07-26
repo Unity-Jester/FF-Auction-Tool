@@ -1,0 +1,19 @@
+{
+  "picks": [
+    {
+      "draft_id": "123456789012345678",
+      "player_id": "picked-player",
+      "roster_id": 1,
+      "draft_slot": 1,
+      "pick_no": 1,
+      "metadata": { "amount": "42" }
+    }
+  ],
+  "rosters": [
+    {
+      "roster_id": 1,
+      "owner_id": "owner-1",
+      "players": ["picked-player", "roster-held-keeper"]
+    }
+  ]
+}

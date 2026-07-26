@@ -385,7 +385,6 @@ export function calculateBaseValues({
   teams,
   replacementLevels,
   preDraftDisplayValues,
-  auctionComplete = false,
 }: CalculateBaseValuesInput): Map<string, BasePlayerValue> {
   if (!Number.isSafeInteger(league.minBid) || league.minBid <= 0) {
     throw new Error("League minimum bid must be a positive integer");
@@ -440,8 +439,7 @@ export function calculateBaseValues({
   // Once every roster is full there are no remaining slots to allocate money
   // to. Keep the real final balances intact and value the undrafted review pool
   // at zero instead of inventing a live-draft budget.
-  const allocatableExtraPool =
-    auctionComplete && openSlots === 0 ? 0 : extraPool;
+  const allocatableExtraPool = openSlots === 0 ? 0 : extraPool;
   const weights = normalizedWeights(uncappedPlayers);
 
   if (allocatableExtraPool > 0 && uncappedPlayers.length === 0) {

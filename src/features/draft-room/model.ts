@@ -2,6 +2,7 @@ import type { DraftPurchase, DraftSnapshot, TeamDraftState } from "@/domain/draf
 import type { LeagueConfig, Position } from "@/domain/league/types";
 import type { PlayerProjection } from "@/domain/players/types";
 import type { PlayerPreference, StrategyConfig } from "@/domain/strategy/types";
+import { calculateBaseValues } from "@/domain/valuation/base-values";
 import { runValuationEngine, type PlayerValuation } from "@/domain/valuation/engine";
 import { calculateReplacementLevels } from "@/domain/valuation/replacement-levels";
 import { scoreProjection } from "@/domain/valuation/score-projection";
@@ -28,6 +29,8 @@ export type DraftRoomPlayer = {
   adjustedValue: number;
   recommendedMaxBid: number;
   maximumLegalBid: number;
+  strategyMaximumBid?: number;
+  inflationMultiplier?: number;
   preference: PlayerPreference;
   explanation: string;
   adjustments: Array<{ label: string; delta: number }>;
@@ -85,6 +88,10 @@ export type DraftRoomViewModel = {
   emptyMessage: string | null;
   reviewSetupRequired?: boolean;
   configurationNotice?: string | null;
+  inflation?: {
+    league: number;
+    byPosition: Record<Position, number>;
+  };
 };
 
 function maxLegal(team: Pick<TeamDraftState, "remainingBudget" | "openSlots">, minBid: number) {
@@ -107,15 +114,21 @@ function effectivePurchases(
 ): { purchases: DraftPurchase[]; active: DraftPurchase[]; ignored: DraftPurchase[] } {
   const authoritative = onePurchasePerPlayer(snapshot.purchases);
   const local = onePurchasePerPlayer(corrections);
-  if (snapshot.status === "complete") {
-    return { purchases: authoritative, active: [], ignored: local };
-  }
   const byPlayer = new Map(authoritative.map((purchase) => [purchase.playerId, purchase]));
-  local.forEach((purchase) => byPlayer.set(purchase.playerId, purchase));
+  const active: DraftPurchase[] = [];
+  const ignored: DraftPurchase[] = [];
+  local.forEach((purchase) => {
+    if (byPlayer.has(purchase.playerId) || snapshot.status === "complete") {
+      ignored.push(purchase);
+      return;
+    }
+    byPlayer.set(purchase.playerId, purchase);
+    active.push(purchase);
+  });
   return {
     purchases: [...byPlayer.values()].sort((left, right) => left.pickNo - right.pickNo),
-    active: local,
-    ignored: [],
+    active,
+    ignored,
   };
 }
 
@@ -129,8 +142,12 @@ function rebuildTeams(
     name: team.name,
     remainingBudget: league.budget,
     openSlots: league.rosterSize,
-    playerIds: [] as string[],
+    playerIds: [...(team.unknownCostPlayerIds ?? [])],
+    unknownCostPlayerIds: [...(team.unknownCostPlayerIds ?? [])],
   }));
+  teams.forEach((team) => {
+    team.openSlots = Math.max(0, league.rosterSize - team.playerIds.length);
+  });
   const byRoster = new Map(teams.map((team) => [team.rosterId, team]));
   const unownedPurchases: DraftPurchase[] = [];
   purchases.forEach((purchase) => {
@@ -140,8 +157,10 @@ function rebuildTeams(
       return;
     }
     team.remainingBudget -= purchase.amount;
-    team.openSlots -= 1;
-    team.playerIds.push(purchase.playerId);
+    if (!team.playerIds.includes(purchase.playerId)) {
+      team.openSlots -= 1;
+      team.playerIds.push(purchase.playerId);
+    }
   });
   return { teams, unownedPurchases };
 }
@@ -201,12 +220,18 @@ export function buildDraftRoomViewModel(input: {
   const metadata = new Map(input.playerSnapshot.map((player) => [player.playerId, player]));
   const projectionById = new Map(input.projections.map((projection) => [projection.playerId, projection]));
   const strategy = normalizedStrategy(input.strategy, metadata, input.preferences);
+  const snapshotRosterIds = new Set(
+    input.snapshot.teams.map((team) => team.rosterId),
+  );
+  const invalidLocalCorrections = input.localCorrections.filter(
+    (purchase) => !snapshotRosterIds.has(purchase.rosterId),
+  );
   const effective = effectivePurchases(input.snapshot, input.localCorrections);
   const rebuilt = rebuildTeams(input.snapshot.teams, input.league, effective.purchases);
   const teamCountMismatch = input.league.teams !== input.snapshot.teams.length;
   const ledgerMessage = teamCountMismatch
     ? `Values unavailable: saved setup has ${input.league.teams} teams, but the Sleeper draft has ${input.snapshot.teams.length}. Review setup before using bid guidance.`
-    : rebuilt.unownedPurchases.length > 0
+    : rebuilt.unownedPurchases.length > 0 || invalidLocalCorrections.length > 0
       ? "Values and maximum bids are unavailable because a purchase references an unknown roster. Review setup or reverse the quarantined local correction."
       : null;
   const scoredById = new Map(input.projections.flatMap((projection) => {
@@ -222,17 +247,21 @@ export function buildDraftRoomViewModel(input: {
             scoreProjection(projection.stats, input.league.scoring, position))),
     }] as const];
   }));
+  const baselineScored = [...scoredById.values()];
   const unjoinable: DraftPurchase[] = [];
-  effective.purchases.forEach((purchase) => {
-    if (scoredById.has(purchase.playerId)) return;
-    const player = metadata.get(purchase.playerId);
+  rebuilt.teams.flatMap((team) => team.playerIds).forEach((playerId) => {
+    if (scoredById.has(playerId)) return;
+    const player = metadata.get(playerId);
     const supported = positions.filter((position) => player?.positions.includes(position));
     if (supported.length === 0) {
-      unjoinable.push(purchase);
+      const purchase = effective.purchases.find(
+        (candidate) => candidate.playerId === playerId,
+      );
+      if (purchase) unjoinable.push(purchase);
       return;
     }
-    scoredById.set(purchase.playerId, {
-      playerId: purchase.playerId,
+    scoredById.set(playerId, {
+      playerId,
       positions: supported,
       points: 0,
     });
@@ -245,14 +274,36 @@ export function buildDraftRoomViewModel(input: {
     (purchase) => knownIds.has(purchase.playerId) && validRosterIds.has(purchase.rosterId),
   );
   let values = new Map<string, PlayerValuation>();
+  let baselineDisplayValues = new Map<string, number>();
   let valuationError: string | null = ledgerMessage;
   if (!ledgerMessage) {
     const replacementLevels = calculateReplacementLevels({
       league: input.league,
       players: scored,
       draftedPlayerIds: draftedIds,
+      rosteredPlayerIdsByTeam: rebuilt.teams.map((team) => team.playerIds),
     });
     try {
+      const preDraftReplacementLevels = calculateReplacementLevels({
+        league: input.league,
+        players: baselineScored,
+      });
+      const preDraftTeams = rebuilt.teams.map((team) => ({
+        ...team,
+        remainingBudget: input.league.budget,
+        openSlots: input.league.rosterSize,
+        playerIds: [],
+        unknownCostPlayerIds: [],
+      }));
+      baselineDisplayValues = new Map(
+        [...calculateBaseValues({
+          league: input.league,
+          strategy,
+          players: baselineScored,
+          teams: preDraftTeams,
+          replacementLevels: preDraftReplacementLevels,
+        }).entries()].map(([playerId, value]) => [playerId, value.displayValue]),
+      );
       values = runValuationEngine({
         league: input.league,
         strategy,
@@ -262,6 +313,7 @@ export function buildDraftRoomViewModel(input: {
         myRosterId: input.myRosterId,
         purchases: valuationPurchases,
         auctionComplete: input.snapshot.status === "complete",
+        preDraftDisplayValues: baselineDisplayValues,
       });
     } catch (error) {
       valuationError = valuationFailureMessage(error);
@@ -282,6 +334,8 @@ export function buildDraftRoomViewModel(input: {
         adjustedValue: value.adjustedValue,
         recommendedMaxBid: value.recommendedMaxBid,
         maximumLegalBid: value.maximumLegalBid,
+        strategyMaximumBid: value.strategyMaximumBid,
+        inflationMultiplier: value.inflationMultiplier,
         preference: strategy.preferences[value.playerId] ?? "neutral",
         explanation: value.explanation,
         adjustments: value.adjustments.map(({ label, delta }) => ({ label, delta })),
@@ -326,6 +380,23 @@ export function buildDraftRoomViewModel(input: {
     input.selectedPlayerId && available.some((player) => player.id === input.selectedPlayerId)
       ? input.selectedPlayerId
       : available[0]?.id ?? null;
+  const unknownCostCount = rebuilt.teams.reduce(
+    (sum, team) => sum + (team.unknownCostPlayerIds?.length ?? 0),
+    0,
+  );
+  const inflationFor = (position?: Position) => {
+    const candidates = [...values.values()].filter(
+      (value) =>
+        value.displayValue > 0 &&
+        (position === undefined || value.position === position),
+    );
+    const baseline = candidates.reduce(
+      (sum, value) => sum + (baselineDisplayValues.get(value.playerId) ?? 0),
+      0,
+    );
+    const live = candidates.reduce((sum, value) => sum + value.displayValue, 0);
+    return baseline > 0 ? live / baseline : 1;
+  };
   return {
     draftId: input.snapshot.draftId,
     draftStatus: input.snapshot.status,
@@ -358,14 +429,21 @@ export function buildDraftRoomViewModel(input: {
       playerName: metadata.get(purchase.playerId)?.name ?? projectionById.get(purchase.playerId)?.name ?? `Unknown player ${purchase.playerId}`,
       teamName: teams.find((team) => team.rosterId === purchase.rosterId)?.name ?? `Roster ${purchase.rosterId}`,
       amount: purchase.amount,
-      reason: "Ignored because final Sleeper results are authoritative.",
+      reason: input.snapshot.purchases.some(
+        (authoritative) => authoritative.playerId === purchase.playerId,
+      )
+        ? "Sleeper now has an authoritative purchase; the differing local correction is visible but does not change values."
+        : "Ignored because final Sleeper results are authoritative.",
     })),
     dataWarnings: [
       ...(unjoinable.length
         ? [`${unjoinable.length} purchase${unjoinable.length === 1 ? "" : "s"} could not be joined to player position data.`]
         : []),
-      ...(rebuilt.unownedPurchases.length
-        ? [`${rebuilt.unownedPurchases.length} purchase${rebuilt.unownedPurchases.length === 1 ? " was" : "s were"} quarantined because ${rebuilt.unownedPurchases.length === 1 ? "it" : "they"} referenced an unknown roster.`]
+      ...((rebuilt.unownedPurchases.length + invalidLocalCorrections.length)
+        ? [`${rebuilt.unownedPurchases.length + invalidLocalCorrections.length} purchase${rebuilt.unownedPurchases.length + invalidLocalCorrections.length === 1 ? " was" : "s were"} quarantined because ${rebuilt.unownedPurchases.length + invalidLocalCorrections.length === 1 ? "it" : "they"} referenced an unknown roster.`]
+        : []),
+      ...(unknownCostCount > 0
+        ? [`${unknownCostCount} roster-held player${unknownCostCount === 1 ? " has" : "s have"} authoritative ownership but no reliable auction price; roster occupancy is counted without guessing spend.`]
         : []),
     ],
     emptyMessage: valuationError ?? (input.projections.length === 0
@@ -374,5 +452,11 @@ export function buildDraftRoomViewModel(input: {
         ? "No available projected players remain."
         : null),
     reviewSetupRequired: ledgerMessage !== null,
+    inflation: {
+      league: inflationFor(),
+      byPosition: Object.fromEntries(
+        positions.map((position) => [position, inflationFor(position)]),
+      ) as Record<Position, number>,
+    },
   };
 }

@@ -102,6 +102,52 @@ describe("calculateReplacementLevels", () => {
     expect(result.replacementPlayerIds.QB).toBe("qb-2");
   });
 
+  it("subtracts a purchased starter opening before selecting the remaining replacement", () => {
+    const config = league({ starters: { RB: 2 } });
+    const players = scored("RB", [100, 90, 80]);
+
+    const result = calculateReplacementLevels({
+      league: config,
+      players,
+      draftedPlayerIds: new Set(["rb-1"]),
+      rosteredPlayerIdsByTeam: [["rb-1"]],
+    });
+
+    expect(result.starterRanks.RB).toBe(1);
+    expect(result.starterPoints.RB).toBe(90);
+    expect(result.replacementPlayerIds.RB).toBe("rb-2");
+  });
+
+  it("allocates rostered multi-position players across fixed, flex, and bench without double counting", () => {
+    const config = league({
+      starters: { RB: 1, WR: 1 },
+      flex: [{ count: 1, eligible: ["RB", "WR", "TE"] }],
+      bench: 1,
+    });
+    const players: ScoredPlayer[] = [
+      { playerId: "owned-dual", positions: ["RB", "WR"], points: 110 },
+      { playerId: "owned-rb", positions: ["RB"], points: 105 },
+      { playerId: "owned-te", positions: ["TE"], points: 95 },
+      ...scored("RB", [90, 80]),
+      ...scored("WR", [85, 75]),
+      ...scored("TE", [70]),
+    ];
+
+    const result = calculateReplacementLevels({
+      league: config,
+      players: [...players].reverse(),
+      draftedPlayerIds: new Set(["owned-dual", "owned-rb", "owned-te"]),
+      rosteredPlayerIdsByTeam: [["owned-te", "owned-rb", "owned-dual"]],
+    });
+
+    expect(
+      Object.values(result.starterRanks).reduce((sum, count) => sum + count, 0),
+    ).toBe(0);
+    expect(
+      Object.values(result.benchRanks).reduce((sum, count) => sum + count, 0),
+    ).toBe(1);
+  });
+
   it("raises quarterback demand when quarterbacks win superflex openings", () => {
     const config = league({
       teams: 2,

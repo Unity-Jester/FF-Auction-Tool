@@ -62,8 +62,29 @@ const team = z
     remainingBudget: nonnegativeSafeInteger,
     openSlots: nonnegativeSafeInteger,
     playerIds: z.array(identifier),
+    unknownCostPlayerIds: z.array(identifier).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    const unknown = value.unknownCostPlayerIds ?? [];
+    if (new Set(unknown).size !== unknown.length) {
+      context.addIssue({
+        code: "custom",
+        message: "Unknown-cost player IDs must be unique",
+        path: ["unknownCostPlayerIds"],
+      });
+    }
+    const rostered = new Set(value.playerIds);
+    unknown.forEach((playerId, index) => {
+      if (!rostered.has(playerId)) {
+        context.addIssue({
+          code: "custom",
+          message: "Unknown-cost ownership must be present on the roster",
+          path: ["unknownCostPlayerIds", index],
+        });
+      }
+    });
+  });
 
 const purchase = z
   .object({

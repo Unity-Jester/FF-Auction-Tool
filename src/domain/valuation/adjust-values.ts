@@ -34,6 +34,12 @@ export type ValueTier = "ELITE" | "HIGH" | "MID" | "LOW";
 export type PositionScarcity = {
   tierByPlayerId: ReadonlyMap<string, ValueTier>;
   supplyByTier: Readonly<Record<ValueTier, number>>;
+  groups: ReadonlyArray<{
+    tier: ValueTier;
+    supply: number;
+    highestValue: number;
+    lowestValue: number;
+  }>;
 };
 
 const PREFERENCE_EFFECTS = {
@@ -50,24 +56,15 @@ function rankPercent(index: number, length: number): number {
   return length <= 1 ? 0 : index / (length - 1);
 }
 
-function valueTier(value: number, maximum: number): ValueTier {
-  const ratio = value / maximum;
-  return ratio >= 0.75
-    ? "ELITE"
-    : ratio >= 0.5
-      ? "HIGH"
-      : ratio >= 0.25
-        ? "MID"
-        : "LOW";
-}
-
 export function calculatePositionScarcity(
   values: ReadonlyArray<BasePlayerValue>,
 ): PositionScarcity {
   const positiveValues = values.filter((value) => value.baseValue > 0);
-  const maximum = positiveValues.reduce(
-    (highest, value) => Math.max(highest, value.baseValue),
-    0,
+  const ordered = [...positiveValues].sort(
+    (left, right) =>
+      right.baseValue - left.baseValue ||
+      right.points - left.points ||
+      left.playerId.localeCompare(right.playerId),
   );
   const tierByPlayerId = new Map<string, ValueTier>();
   const supplyByTier: Record<ValueTier, number> = {
@@ -76,14 +73,37 @@ export function calculatePositionScarcity(
     MID: 0,
     LOW: 0,
   };
-  if (maximum > 0) {
-    positiveValues.forEach((value) => {
-      const tier = valueTier(value.baseValue, maximum);
+  const tierOrder: ValueTier[] = ["ELITE", "HIGH", "MID", "LOW"];
+  let tierIndex = 0;
+  if (ordered.length > 0) {
+    ordered.forEach((value, index) => {
+      const previous = ordered[index - 1];
+      if (
+        previous !== undefined &&
+        previous.baseValue - value.baseValue >=
+          Math.max(3, previous.baseValue * 0.12)
+      ) {
+        tierIndex = Math.min(tierOrder.length - 1, tierIndex + 1);
+      }
+      const tier = tierOrder[tierIndex];
       tierByPlayerId.set(value.playerId, tier);
       supplyByTier[tier] += 1;
     });
   }
-  return { tierByPlayerId, supplyByTier };
+  const groups = tierOrder.flatMap((tier) => {
+    const members = ordered.filter(
+      (value) => tierByPlayerId.get(value.playerId) === tier,
+    );
+    return members.length === 0
+      ? []
+      : [{
+          tier,
+          supply: members.length,
+          highestValue: members[0].baseValue,
+          lowestValue: members[members.length - 1].baseValue,
+        }];
+  });
+  return { tierByPlayerId, supplyByTier, groups };
 }
 
 function spendingCurveParts(
