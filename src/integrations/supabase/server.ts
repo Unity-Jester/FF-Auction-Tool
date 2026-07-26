@@ -5,7 +5,7 @@ import type { PublicSupabaseConfig } from "./config";
 
 export async function createSupabaseServerClient(config: PublicSupabaseConfig) {
   const cookieStore = await cookies();
-  return createServerClient(config.url, config.anonKey, {
+  return createServerClient(config.url, config.publicKey, {
     cookies: {
       getAll: () => cookieStore.getAll(),
       setAll: (values) => {

@@ -1,12 +1,22 @@
 "use client";
 
 import type { AuthChangeEvent, Session } from "@supabase/supabase-js";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type ComponentType,
+  type FormEvent,
+} from "react";
 
 import {
-  parsePublicSupabaseConfig,
-  type PublicSupabaseConfig,
+  parsePublicAccountConfig,
+  type RawPublicSupabaseConfig,
 } from "@/integrations/supabase/config";
+import {
+  CaptchaChallenge,
+  type CaptchaChallengeProps,
+} from "./captcha-challenge";
 
 type AccountClient = {
   auth: {
@@ -16,7 +26,7 @@ type AccountClient = {
     ): { data: { subscription: { unsubscribe(): void } } };
     signInWithOtp(input: {
       email: string;
-      options: { emailRedirectTo: string };
+      options: { emailRedirectTo: string; captchaToken: string };
     }): Promise<{ error: unknown | null }>;
     signOut(): Promise<{ error: unknown | null }>;
   };
@@ -25,12 +35,16 @@ type AccountClient = {
 export function AccountMenu({
   config,
   createClient,
+  CaptchaComponent = CaptchaChallenge,
 }: {
-  config: PublicSupabaseConfig | null;
-  createClient?: (config: PublicSupabaseConfig) => AccountClient;
+  config: RawPublicSupabaseConfig | null;
+  createClient?: (
+    config: NonNullable<ReturnType<typeof parsePublicAccountConfig>>,
+  ) => AccountClient;
+  CaptchaComponent?: ComponentType<CaptchaChallengeProps>;
 }) {
   const validConfig = useMemo(
-    () => config ? parsePublicSupabaseConfig(config) : null,
+    () => config ? parsePublicAccountConfig(config) : null,
     [config],
   );
   const injectedClient = useMemo(() => {
@@ -49,6 +63,27 @@ export function AccountMenu({
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
+  const [captchaToken, setCaptchaToken] = useState("");
+  const [captchaAttempt, setCaptchaAttempt] = useState(0);
+
+  useEffect(() => {
+    if (!validConfig) return;
+    const marker = new URL(window.location.href);
+    if (marker.searchParams.get("auth") !== "error") return;
+    const revealError = window.setTimeout(() => {
+      setOpen(true);
+      setError(
+        "That sign-in link could not be used. Request a new one or keep using guest mode.",
+      );
+      marker.searchParams.delete("auth");
+      window.history.replaceState(
+        window.history.state,
+        "",
+        `${marker.pathname}${marker.search}${marker.hash}`,
+      );
+    }, 0);
+    return () => window.clearTimeout(revealError);
+  }, [validConfig]);
 
   useEffect(() => {
     if (!validConfig || createClient) return;
@@ -100,7 +135,10 @@ export function AccountMenu({
     try {
       const result = await client.auth.signInWithOtp({
         email: email.trim(),
-        options: { emailRedirectTo: callback.toString() },
+        options: {
+          emailRedirectTo: callback.toString(),
+          captchaToken,
+        },
       });
       if (result.error) throw new Error("Auth provider rejected request");
       setMessage("Check your email for a sign-in link.");
@@ -108,6 +146,8 @@ export function AccountMenu({
       setError("We could not send a sign-in link. You can keep using guest mode.");
     } finally {
       setPending(false);
+      setCaptchaToken("");
+      setCaptchaAttempt((value) => value + 1);
     }
   };
 
@@ -157,7 +197,13 @@ export function AccountMenu({
                   onChange={(event) => setEmail(event.target.value)}
                 />
               </label>
-              <button type="submit" disabled={pending}>
+              <CaptchaComponent
+                key={captchaAttempt}
+                siteKey={validConfig.captchaSiteKey}
+                onVerify={setCaptchaToken}
+                onExpire={() => setCaptchaToken("")}
+              />
+              <button type="submit" disabled={pending || !captchaToken}>
                 {pending ? "Sending…" : "Email me a sign-in link"}
               </button>
             </form>

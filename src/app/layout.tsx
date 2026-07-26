@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import "./globals.css";
 import { AccountMenu } from "@/features/account/components/account-menu";
-import { publicSupabaseConfigFromEnv } from "@/integrations/supabase/config";
+import { publicAccountConfigFromEnv } from "@/integrations/supabase/config";
 import { Providers } from "./providers";
 
 export const metadata: Metadata = {
@@ -14,7 +14,7 @@ export const metadata: Metadata = {
 export default function RootLayout({
   children,
 }: Readonly<{ children: ReactNode }>) {
-  const supabaseConfig = publicSupabaseConfigFromEnv();
+  const supabaseConfig = publicAccountConfigFromEnv();
   return (
     <html lang="en">
       <body>

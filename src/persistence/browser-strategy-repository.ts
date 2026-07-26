@@ -5,6 +5,9 @@ import {
 } from "./saved-strategy-repository";
 
 const STORAGE_KEY = "sleeper-auction-companion:saved-strategies:v1";
+const LOCK_NAME = "sleeper-auction-companion:saved-strategies";
+const LOCK_TIMEOUT_MS = 2_000;
+const mutationQueues = new WeakMap<Storage, Promise<void>>();
 const unavailableStorage: Storage = {
   length: 0,
   clear: () => { throw new DOMException("Storage unavailable"); },
@@ -22,10 +25,54 @@ export function browserStrategyStorage(): Storage {
   }
 }
 
+async function withInProcessLock<T>(
+  storage: Storage,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = mutationQueues.get(storage) ?? Promise.resolve();
+  let release = () => {};
+  const complete = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const tail = previous.catch(() => undefined).then(() => complete);
+  mutationQueues.set(storage, tail);
+  await previous.catch(() => undefined);
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (mutationQueues.get(storage) === tail) mutationQueues.delete(storage);
+  }
+}
+
+async function withMutationLock<T>(
+  storage: Storage,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
+  if (!locks) return withInProcessLock(storage, operation);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), LOCK_TIMEOUT_MS);
+  try {
+    return await locks.request(
+      LOCK_NAME,
+      { mode: "exclusive", signal: controller.signal },
+      operation,
+    );
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error("Saved strategies are busy in another tab. Please try again.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export class BrowserStrategyRepository implements SavedStrategyRepository {
   constructor(private readonly storage: Storage) {}
 
-  async list(): Promise<SavedStrategy[]> {
+  private read(): SavedStrategy[] {
     try {
       const raw = this.storage.getItem(STORAGE_KEY);
       if (!raw) return [];
@@ -45,14 +92,20 @@ export class BrowserStrategyRepository implements SavedStrategyRepository {
     }
   }
 
+  async list(): Promise<SavedStrategy[]> {
+    return this.read();
+  }
+
   async save(value: SavedStrategy): Promise<void> {
     const strategy = parseSavedStrategy(value);
-    const records = [
-      strategy,
-      ...(await this.list()).filter((item) => item.id !== strategy.id),
-    ];
     try {
-      this.storage.setItem(STORAGE_KEY, JSON.stringify(records));
+      await withMutationLock(this.storage, async () => {
+        const records = [
+          strategy,
+          ...this.read().filter((item) => item.id !== strategy.id),
+        ];
+        this.storage.setItem(STORAGE_KEY, JSON.stringify(records));
+      });
     } catch {
       throw new Error("This browser could not save the strategy.");
     }
@@ -63,8 +116,10 @@ export class BrowserStrategyRepository implements SavedStrategyRepository {
       throw new Error("The saved strategy identifier is not valid.");
     }
     try {
-      const records = (await this.list()).filter((item) => item.id !== id);
-      this.storage.setItem(STORAGE_KEY, JSON.stringify(records));
+      await withMutationLock(this.storage, async () => {
+        const records = this.read().filter((item) => item.id !== id);
+        this.storage.setItem(STORAGE_KEY, JSON.stringify(records));
+      });
     } catch {
       throw new Error("This browser could not remove the strategy.");
     }

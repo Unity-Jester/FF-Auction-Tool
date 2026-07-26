@@ -22,7 +22,13 @@ export async function GET(request: NextRequest) {
   const next = safeNextPath(request.nextUrl.searchParams.get("next"));
   const redirect = new URL(next, request.nextUrl.origin);
   const code = request.nextUrl.searchParams.get("code");
-  if (!config || !code) return NextResponse.redirect(redirect);
+  const providerError =
+    request.nextUrl.searchParams.has("error") ||
+    request.nextUrl.searchParams.has("error_description");
+  if (!config || !code || providerError) {
+    redirect.searchParams.set("auth", "error");
+    return NextResponse.redirect(redirect);
+  }
   try {
     const client = await createSupabaseServerClient(config);
     const { error } = await client.auth.exchangeCodeForSession(code);

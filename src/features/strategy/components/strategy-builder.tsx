@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 
 import type { LeagueConfig, Position } from "@/domain/league/types";
 import type { PlayerPreference, StrategyConfig } from "@/domain/strategy/types";
+import { parsePublicAccountConfig } from "@/integrations/supabase/config";
 import { browserStrategyStorage } from "@/persistence/browser-strategy-repository";
 import type { SavedStrategy } from "@/persistence/saved-strategy-repository";
 import { repositoryForCurrentSession } from "@/persistence/strategy-repository-selector";
@@ -39,14 +40,24 @@ export function StrategyBuilder({
   const [savedCreatedAt, setSavedCreatedAt] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState("");
   const [saveError, setSaveError] = useState("");
+  const [mutationPending, setMutationPending] = useState<{
+    type: "save" | "remove";
+    id?: string;
+  } | null>(null);
   const accountEpoch = useRef(0);
-  const config = useMemo(() => ({
-    url: process.env.NEXT_PUBLIC_SUPABASE_URL,
-    anonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-  }), []);
+  const config = useMemo(
+    () =>
+      parsePublicAccountConfig({
+        url: process.env.NEXT_PUBLIC_SUPABASE_URL,
+        publishableKey: process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
+        anonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+        captchaSiteKey: process.env.NEXT_PUBLIC_SUPABASE_CAPTCHA_SITE_KEY,
+      }),
+    [],
+  );
 
   const getRepository = () =>
-    repositoryForCurrentSession(config, browserStrategyStorage());
+    repositoryForCurrentSession(config ?? {}, browserStrategyStorage());
 
   const refreshSaved = async () => {
     const epoch = accountEpoch.current;
@@ -55,10 +66,11 @@ export function StrategyBuilder({
       const records = await repository.list();
       if (epoch !== accountEpoch.current) return;
       setSavedStrategies(records);
-      setSaveError("");
+      setSaveError(repository.getWarnings?.()[0] ?? "");
     } catch {
       if (epoch !== accountEpoch.current) return;
       setSavedStrategies([]);
+      setMutationPending(null);
       setSaveError("Saved strategies are unavailable. Your current plan is unchanged.");
     }
   };
@@ -71,6 +83,9 @@ export function StrategyBuilder({
       setSavedCreatedAt(null);
       setSavedName("");
       setSavedStrategies([]);
+      setMutationPending(null);
+      setSaveMessage("");
+      setSaveError("");
       void refreshSaved();
     };
     window.addEventListener("strategy-auth-change", onAuthChange);
@@ -123,6 +138,7 @@ export function StrategyBuilder({
     }));
   };
   const saveNamedStrategy = async () => {
+    if (mutationPending) return;
     const epoch = accountEpoch.current;
     const name = savedName.trim();
     if (!name || name.length > 80) {
@@ -137,6 +153,7 @@ export function StrategyBuilder({
       createdAt: savedCreatedAt ?? now,
       updatedAt: now,
     };
+    setMutationPending({ type: "save" });
     try {
       const repository = await getRepository();
       await repository.save(record);
@@ -145,12 +162,19 @@ export function StrategyBuilder({
       setSavedId(record.id);
       setSavedCreatedAt(record.createdAt);
       setSaveMessage(`Saved “${name}”.`);
-      setSaveError("");
+      setSaveError(repository.getWarnings?.()[0] ?? "");
       setSavedStrategies(records);
-    } catch {
+    } catch (error) {
       if (epoch !== accountEpoch.current) return;
       setSaveMessage("");
-      setSaveError("The strategy could not be saved. Your current plan is unchanged.");
+      setSaveError(
+        error instanceof Error &&
+          error.message === "You can save up to 50 named strategies."
+          ? error.message
+          : "The strategy could not be saved. Your current plan is unchanged.",
+      );
+    } finally {
+      if (epoch === accountEpoch.current) setMutationPending(null);
     }
   };
   const loadNamedStrategy = (record: SavedStrategy) => {
@@ -162,7 +186,9 @@ export function StrategyBuilder({
     setSaveError("");
   };
   const removeNamedStrategy = async (record: SavedStrategy) => {
+    if (mutationPending) return;
     const epoch = accountEpoch.current;
+    setMutationPending({ type: "remove", id: record.id });
     try {
       const repository = await getRepository();
       await repository.remove(record.id);
@@ -174,10 +200,12 @@ export function StrategyBuilder({
       }
       setSavedStrategies(records);
       setSaveMessage(`Removed “${record.name}”.`);
-      setSaveError("");
+      setSaveError(repository.getWarnings?.()[0] ?? "");
     } catch {
       if (epoch !== accountEpoch.current) return;
       setSaveError("The saved strategy could not be removed.");
+    } finally {
+      if (epoch === accountEpoch.current) setMutationPending(null);
     }
   };
   const enter = () => {
@@ -484,12 +512,17 @@ export function StrategyBuilder({
             <input
               aria-label="Saved strategy name"
               maxLength={80}
+              disabled={mutationPending !== null}
               value={savedName}
               onChange={(event) => setSavedName(event.target.value)}
             />
           </label>
-          <button type="button" onClick={saveNamedStrategy}>
-            Save named strategy
+          <button
+            type="button"
+            disabled={mutationPending !== null}
+            onClick={saveNamedStrategy}
+          >
+            {mutationPending?.type === "save" ? "Saving…" : "Save named strategy"}
           </button>
         </div>
         {savedStrategies.length ? (
@@ -500,16 +533,26 @@ export function StrategyBuilder({
                 <button
                   type="button"
                   aria-label={`Load ${record.name}`}
+                  disabled={mutationPending !== null}
                   onClick={() => loadNamedStrategy(record)}
                 >
                   Load
                 </button>
                 <button
                   type="button"
-                  aria-label={`Remove ${record.name}`}
+                  aria-label={
+                    mutationPending?.type === "remove" &&
+                    mutationPending.id === record.id
+                      ? `Removing ${record.name}`
+                      : `Remove ${record.name}`
+                  }
+                  disabled={mutationPending !== null}
                   onClick={() => void removeNamedStrategy(record)}
                 >
-                  Remove
+                  {mutationPending?.type === "remove" &&
+                  mutationPending.id === record.id
+                    ? "Removing…"
+                    : "Remove"}
                 </button>
               </li>
             ))}

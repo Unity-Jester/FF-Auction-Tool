@@ -49,6 +49,28 @@ export interface SavedStrategyRepository {
   list(): Promise<SavedStrategy[]>;
   save(strategy: SavedStrategy): Promise<void>;
   remove(id: string): Promise<void>;
+  getWarnings?(): string[];
+}
+
+export function estimatedPostgresJsonBytes(value: unknown): number {
+  const compact = JSON.stringify(value);
+  let separators = 0;
+  let quoted = false;
+  let escaped = false;
+  for (const character of compact) {
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') quoted = false;
+    } else if (character === '"') {
+      quoted = true;
+    } else if (character === ":" || character === ",") {
+      separators += 1;
+    }
+  }
+  // jsonb::text adds spaces after structural separators. The fixed margin covers
+  // numeric normalization differences between JavaScript and PostgreSQL.
+  return new TextEncoder().encode(compact).byteLength + separators + 256;
 }
 
 export function parseSavedStrategy(value: unknown): SavedStrategy {
@@ -59,7 +81,7 @@ export function parseSavedStrategy(value: unknown): SavedStrategy {
     }
     throw new Error("The saved strategy is not valid.");
   }
-  const bytes = new TextEncoder().encode(JSON.stringify(parsed.data.strategy)).byteLength;
+  const bytes = estimatedPostgresJsonBytes(parsed.data.strategy);
   if (bytes > MAX_STRATEGY_BYTES) {
     throw new Error("A saved strategy cannot exceed 32 KB.");
   }

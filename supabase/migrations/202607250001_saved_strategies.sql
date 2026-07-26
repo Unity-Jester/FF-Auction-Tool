@@ -15,7 +15,8 @@ alter table public.saved_strategies force row level security;
 
 revoke all on public.saved_strategies from public;
 revoke all on public.saved_strategies from anon;
-grant select, insert, update, delete on public.saved_strategies to authenticated;
+revoke insert, update on public.saved_strategies from authenticated;
+grant select, delete on public.saved_strategies to authenticated;
 
 drop policy if exists "owners select saved strategies" on public.saved_strategies;
 create policy "owners select saved strategies"
@@ -23,15 +24,7 @@ create policy "owners select saved strategies"
   using (auth.uid() = user_id);
 
 drop policy if exists "owners insert saved strategies" on public.saved_strategies;
-create policy "owners insert saved strategies"
-  on public.saved_strategies for insert to authenticated
-  with check (auth.uid() = user_id);
-
 drop policy if exists "owners update saved strategies" on public.saved_strategies;
-create policy "owners update saved strategies"
-  on public.saved_strategies for update to authenticated
-  using (auth.uid() = user_id)
-  with check (auth.uid() = user_id);
 
 drop policy if exists "owners delete saved strategies" on public.saved_strategies;
 create policy "owners delete saved strategies"
@@ -47,6 +40,9 @@ as $$
 begin
   if new.user_id is distinct from old.user_id then
     raise exception 'saved strategy owner cannot be changed';
+  end if;
+  if new.created_at is distinct from old.created_at then
+    raise exception 'saved strategy creation time cannot be changed';
   end if;
   return new;
 end;
@@ -76,3 +72,56 @@ for each row execute function public.set_saved_strategy_updated_at();
 
 revoke all on function public.protect_saved_strategy_owner() from public, anon, authenticated;
 revoke all on function public.set_saved_strategy_updated_at() from public, anon, authenticated;
+
+create or replace function public.save_strategy(
+  p_id uuid,
+  p_name text,
+  p_strategy jsonb
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_user_id uuid := auth.uid();
+begin
+  if v_user_id is null then
+    raise exception using
+      errcode = '42501',
+      message = 'saved_strategy_auth_required';
+  end if;
+
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(v_user_id::text, 0)
+  );
+
+  if exists (
+    select 1
+    from public.saved_strategies
+    where id = p_id and user_id = v_user_id
+  ) then
+    update public.saved_strategies
+    set name = p_name, strategy = p_strategy
+    where id = p_id and user_id = v_user_id;
+  else
+    if (
+      select count(*)
+      from public.saved_strategies
+      where user_id = v_user_id
+    ) >= 50 then
+      raise exception using
+        errcode = 'P0001',
+        message = 'saved_strategy_quota_exceeded';
+    end if;
+
+    insert into public.saved_strategies (id, user_id, name, strategy)
+    values (p_id, v_user_id, p_name, p_strategy);
+  end if;
+end;
+$$;
+
+revoke all on function public.save_strategy(uuid, text, jsonb)
+  from public, anon, authenticated;
+grant execute on function public.save_strategy(uuid, text, jsonb)
+  to authenticated;

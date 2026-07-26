@@ -1,6 +1,6 @@
 import {
-  parsePublicSupabaseConfig,
-  type PublicSupabaseConfig,
+  parsePublicAccountConfig,
+  type RawPublicSupabaseConfig,
 } from "@/integrations/supabase/config";
 import { BrowserStrategyRepository } from "./browser-strategy-repository";
 import type { SavedStrategyRepository } from "./saved-strategy-repository";
@@ -12,7 +12,7 @@ import {
 type SessionLike = { user: { id: string } } | null;
 
 export async function selectStrategyRepository(
-  rawConfig: Partial<PublicSupabaseConfig>,
+  rawConfig: RawPublicSupabaseConfig,
   session: SessionLike,
   storage: Storage,
   createCloud: (
@@ -21,7 +21,7 @@ export async function selectStrategyRepository(
   ) => SavedStrategyRepository = (client, userId) =>
     new SupabaseStrategyRepository(client, userId),
 ): Promise<SavedStrategyRepository> {
-  const config = parsePublicSupabaseConfig(rawConfig);
+  const config = parsePublicAccountConfig(rawConfig);
   if (!config || !session?.user?.id) return new BrowserStrategyRepository(storage);
   const { createSupabaseBrowserClient } = await import(
     "@/integrations/supabase/client"
@@ -31,10 +31,10 @@ export async function selectStrategyRepository(
 }
 
 export async function repositoryForCurrentSession(
-  rawConfig: Partial<PublicSupabaseConfig>,
+  rawConfig: RawPublicSupabaseConfig,
   storage: Storage,
 ): Promise<SavedStrategyRepository> {
-  const config = parsePublicSupabaseConfig(rawConfig);
+  const config = parsePublicAccountConfig(rawConfig);
   if (!config) return new BrowserStrategyRepository(storage);
   try {
     const { createSupabaseBrowserClient } = await import(
