@@ -25,7 +25,7 @@ export function SyncStatus({
       <strong>{label}</strong>
       <span>Updated {updated}</span>
       {status !== "fresh" && (
-        <button type="button" onClick={onRetry}>Retry sync</button>
+        <button className={styles.criticalAction} type="button" onClick={onRetry}>Retry sync</button>
       )}
     </div>
   );

@@ -1,9 +1,18 @@
+import { readFileSync } from "node:fs";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import type { DraftRoomViewModel } from "@/features/draft-room/model";
+import type { DraftSnapshot } from "@/domain/draft/types";
+import type { PlayerProjection } from "@/domain/players/types";
+import { defaultStrategy } from "@/features/strategy/default-strategies";
+import {
+  buildDraftRoomViewModel,
+  type DraftRoomViewModel,
+  type PlayerSnapshot,
+} from "@/features/draft-room/model";
 import { DraftRoomView } from "@/features/draft-room/components/draft-room";
+import completedAuction from "../fixtures/draft-room/completed-public-auction-shape.json";
 
 const model = (overrides: Partial<DraftRoomViewModel> = {}): DraftRoomViewModel => ({
   draftId: "draft-1",
@@ -123,5 +132,106 @@ describe("DraftRoomView", () => {
       configurationNotice: "Using a recommended plan because no valid saved strategy was found.",
     })} onRetry={vi.fn()} />);
     expect(screen.getByText(/no valid saved strategy/i)).toBeInTheDocument();
+  });
+
+  it("does not introduce a nested main landmark", () => {
+    const { container } = render(<DraftRoomView model={model()} onRetry={vi.fn()} />);
+    expect(container.querySelector("main")).toBeNull();
+  });
+
+  it("keeps retry and correction actions at the shared touch-target size", async () => {
+    const user = userEvent.setup();
+    render(<DraftRoomView
+      model={model({
+        syncStatus: "stale",
+        localCorrections: [{ playerId: "owned", playerName: "Amon-Ra St. Brown", teamName: "Gridiron Lab", amount: 49 }],
+      })}
+      onRetry={vi.fn()}
+      onReverseCorrection={vi.fn()}
+      onAddCorrection={vi.fn()}
+    />);
+
+    expect(screen.getByRole("button", { name: "Retry sync" }).className).toContain("criticalAction");
+    expect(screen.getByRole("button", { name: "Reverse correction for Amon-Ra St. Brown" }).className).toContain("criticalAction");
+    await user.click(screen.getByRole("button", { name: "Add local purchase correction" }));
+    expect(screen.getByRole("button", { name: "Save local correction" }).className).toContain("criticalAction");
+
+    const roomStyles = readFileSync("src/features/draft-room/draft-room.module.css", "utf8");
+    const globalStyles = readFileSync("src/app/globals.css", "utf8");
+    expect(roomStyles).toMatch(/button\.criticalAction[^}]*min-height:\s*var\(--target-size\)/s);
+    expect(globalStyles).toContain("--target-size: 2.75rem");
+  });
+});
+
+describe("buildDraftRoomViewModel", () => {
+  const completed = completedAuction as DraftSnapshot;
+  const projection = (playerId: string, position: "QB" | "RB", index: number): PlayerProjection => ({
+    playerId,
+    name: `Player ${playerId}`,
+    team: "NFL",
+    positions: [position],
+    stats: position === "QB"
+      ? { passYards: 4500 - index * 25, passTds: 30 }
+      : { rushYards: 1400 - index * 25, rushTds: 10, receptions: 40 },
+    source: "Regression fixture",
+    updatedAt: "2026-07-26T12:00:00.000Z",
+  });
+  const projections = [
+    ...Array.from({ length: 12 }, (_, index) => projection(`qb${index + 1}`, "QB", index)),
+    ...Array.from({ length: 12 }, (_, index) => projection(`rb${index + 1}`, "RB", index)),
+    projection("free-rb", "RB", 12),
+  ];
+  const players: PlayerSnapshot[] = projections.map((item) => ({
+    playerId: item.playerId,
+    name: item.name,
+    team: item.team,
+    positions: [...item.positions],
+  }));
+
+  it("keeps completed-draft values reviewable when full rosters retain unused dollars", () => {
+    const result = buildDraftRoomViewModel({
+      snapshot: completed,
+      league: completed.league,
+      strategy: defaultStrategy(completed.league),
+      preferences: {},
+      projections,
+      projectionSource: "Regression fixture",
+      projectionStale: false,
+      playerSnapshot: players,
+      myRosterId: 1,
+      localCorrections: [],
+      syncStatus: "fresh",
+      lastUpdatedAt: completed.lastUpdatedAt,
+    });
+
+    expect(result.emptyMessage).toBeNull();
+    expect(result.players).toEqual([
+      expect.objectContaining({ id: "free-rb", baseValue: 0, recommendedMaxBid: 0 }),
+    ]);
+    expect(result.teams[0]).toEqual(expect.objectContaining({ remainingBudget: 5, openSlots: 0 }));
+  });
+
+  it("surfaces a safe valuation reason when draft inputs are truly invalid", () => {
+    const invalid: DraftSnapshot = {
+      ...completed,
+      teams: [{ ...completed.teams[0], remainingBudget: -1 }, ...completed.teams.slice(1)],
+    };
+    const result = buildDraftRoomViewModel({
+      snapshot: invalid,
+      league: invalid.league,
+      strategy: defaultStrategy(invalid.league),
+      preferences: {},
+      projections,
+      projectionSource: "Regression fixture",
+      projectionStale: false,
+      playerSnapshot: players,
+      myRosterId: 1,
+      localCorrections: [],
+      syncStatus: "fresh",
+      lastUpdatedAt: invalid.lastUpdatedAt,
+    });
+
+    expect(result.emptyMessage).toMatch(/remaining budget/i);
+    expect(result.emptyMessage).not.toMatch(/until the saved setup matches/i);
   });
 });

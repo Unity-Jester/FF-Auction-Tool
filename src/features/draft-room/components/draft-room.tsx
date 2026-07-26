@@ -85,7 +85,7 @@ export function DraftRoomView({
       {model.draftStatus === "complete" && (
         <p className={styles.complete}>Final Sleeper results are loaded. Values are preserved for review.</p>
       )}
-      <main className={styles.workspace}>
+      <div className={styles.workspace}>
         <div className={`${styles.nowRegion} ${show("now")}`}>
           <CurrentPlayer player={selected} recentPurchase={model.recentPurchase} />
           {selected && onAddCorrection && model.draftStatus !== "complete" && (
@@ -111,7 +111,7 @@ export function DraftRoomView({
                   <label>Sale price
                     <input aria-label="Local sale price" type="number" min="1" required value={correctionAmount} onChange={(event) => setCorrectionAmount(event.target.value)} />
                   </label>
-                  <button type="submit">Save local correction</button>
+                  <button className={styles.criticalAction} type="submit">Save local correction</button>
                 </form>
               )}
             </div>
@@ -128,7 +128,7 @@ export function DraftRoomView({
         <aside className={`${styles.leagueRegion} ${show("league")}`}>
           <LeagueRosters model={model} />
         </aside>
-      </main>
+      </div>
     </div>
   );
 }

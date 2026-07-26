@@ -103,6 +103,17 @@ function effectiveTeams(
   });
 }
 
+function valuationFailureMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  if (/remaining budget/i.test(message)) {
+    return `Values unavailable: ${message}. Review the saved league setup and local corrections.`;
+  }
+  if (/purchase|roster owner|duplicate|unknown roster/i.test(message)) {
+    return "Values unavailable: purchases conflict with roster assignments. Reverse local corrections or retry Sleeper sync.";
+  }
+  return "Values unavailable: the draft data could not be reconciled. Retry sync or review the saved league setup.";
+}
+
 function normalizedStrategy(
   strategy: StrategyConfig,
   players: ReadonlyMap<string, PlayerSnapshot>,
@@ -161,6 +172,11 @@ export function buildDraftRoomViewModel(input: {
     }];
   });
   const effective = effectiveTeams(input.snapshot.teams, input.localCorrections);
+  const valuationTeams =
+    input.snapshot.status === "complete" &&
+    effective.every((team) => team.openSlots === 0 && team.remainingBudget >= 0)
+      ? effective.map((team) => ({ ...team, remainingBudget: 0 }))
+      : effective;
   const draftedIds = new Set(effective.flatMap((team) => team.playerIds));
   const knownIds = new Set(scored.map((player) => player.playerId));
   const purchases = [...input.snapshot.purchases, ...input.localCorrections].filter(
@@ -178,13 +194,13 @@ export function buildDraftRoomViewModel(input: {
       league: input.league,
       strategy,
       players: scored,
-      teams: effective,
+      teams: valuationTeams,
       replacementLevels,
       myRosterId: input.myRosterId,
       purchases,
     });
-  } catch {
-    valuationError = "Values are unavailable until the saved setup matches this draft.";
+  } catch (error) {
+    valuationError = valuationFailureMessage(error);
   }
   const available: DraftRoomPlayer[] = [...values.values()]
     .flatMap((value) => {

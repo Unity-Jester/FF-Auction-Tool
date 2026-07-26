@@ -238,6 +238,11 @@
 .selector button:hover { background: var(--color-surface); }
 .selector button small { margin-top: .3rem; color: var(--color-text-muted); }
 .loader { width: 1.2rem; height: 1.2rem; margin-bottom: 1rem; border: 2px solid var(--color-line); border-top-color: var(--color-accent); border-radius: 50%; animation: spin .8s linear infinite; }
+.sync button.criticalAction,
+.correction button.criticalAction,
+.correctionControl form button.criticalAction {
+  min-height: var(--target-size);
+}
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes enter { from { opacity: 0; } }
 

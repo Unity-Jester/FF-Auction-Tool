@@ -1,0 +1,62 @@
+{
+  "draftId": "1381850653902503936",
+  "status": "complete",
+  "type": "auction",
+  "league": {
+    "teams": 12,
+    "budget": 200,
+    "minBid": 1,
+    "starters": { "QB": 1, "RB": 1, "WR": 0, "TE": 0, "K": 0, "DEF": 0 },
+    "bench": 0,
+    "rosterSize": 2,
+    "flex": [],
+    "scoring": {
+      "passYard": 0.04, "passTd": 4, "interception": -2,
+      "rushYard": 0.1, "rushTd": 6, "reception": 1,
+      "receivingYard": 0.1, "receivingTd": 6, "fumbleLost": -2,
+      "positionReceptionBonus": {}
+    },
+    "capKickerDefenseAtOne": true
+  },
+  "teams": [
+    { "rosterId": 1, "name": "Team 1", "remainingBudget": 5, "openSlots": 0, "playerIds": ["qb1", "rb1"] },
+    { "rosterId": 2, "name": "Team 2", "remainingBudget": 0, "openSlots": 0, "playerIds": ["qb2", "rb2"] },
+    { "rosterId": 3, "name": "Team 3", "remainingBudget": 10, "openSlots": 0, "playerIds": ["qb3", "rb3"] },
+    { "rosterId": 4, "name": "Team 4", "remainingBudget": 0, "openSlots": 0, "playerIds": ["qb4", "rb4"] },
+    { "rosterId": 5, "name": "Team 5", "remainingBudget": 0, "openSlots": 0, "playerIds": ["qb5", "rb5"] },
+    { "rosterId": 6, "name": "Team 6", "remainingBudget": 7, "openSlots": 0, "playerIds": ["qb6", "rb6"] },
+    { "rosterId": 7, "name": "Team 7", "remainingBudget": 0, "openSlots": 0, "playerIds": ["qb7", "rb7"] },
+    { "rosterId": 8, "name": "Team 8", "remainingBudget": 0, "openSlots": 0, "playerIds": ["qb8", "rb8"] },
+    { "rosterId": 9, "name": "Team 9", "remainingBudget": 2, "openSlots": 0, "playerIds": ["qb9", "rb9"] },
+    { "rosterId": 10, "name": "Team 10", "remainingBudget": 0, "openSlots": 0, "playerIds": ["qb10", "rb10"] },
+    { "rosterId": 11, "name": "Team 11", "remainingBudget": 0, "openSlots": 0, "playerIds": ["qb11", "rb11"] },
+    { "rosterId": 12, "name": "Team 12", "remainingBudget": 0, "openSlots": 0, "playerIds": ["qb12", "rb12"] }
+  ],
+  "purchases": [
+    { "draftId": "1381850653902503936", "playerId": "qb1", "rosterId": 1, "amount": 20, "pickNo": 1, "createdAt": null, "source": "sleeper", "keeper": false },
+    { "draftId": "1381850653902503936", "playerId": "rb1", "rosterId": 1, "amount": 175, "pickNo": 2, "createdAt": null, "source": "sleeper", "keeper": false },
+    { "draftId": "1381850653902503936", "playerId": "qb2", "rosterId": 2, "amount": 20, "pickNo": 3, "createdAt": null, "source": "sleeper", "keeper": false },
+    { "draftId": "1381850653902503936", "playerId": "rb2", "rosterId": 2, "amount": 180, "pickNo": 4, "createdAt": null, "source": "sleeper", "keeper": false },
+    { "draftId": "1381850653902503936", "playerId": "qb3", "rosterId": 3, "amount": 20, "pickNo": 5, "createdAt": null, "source": "sleeper", "keeper": false },
+    { "draftId": "1381850653902503936", "playerId": "rb3", "rosterId": 3, "amount": 170, "pickNo": 6, "createdAt": null, "source": "sleeper", "keeper": false },
+    { "draftId": "1381850653902503936", "playerId": "qb4", "rosterId": 4, "amount": 20, "pickNo": 7, "createdAt": null, "source": "sleeper", "keeper": false },
+    { "draftId": "1381850653902503936", "playerId": "rb4", "rosterId": 4, "amount": 180, "pickNo": 8, "createdAt": null, "source": "sleeper", "keeper": false },
+    { "draftId": "1381850653902503936", "playerId": "qb5", "rosterId": 5, "amount": 20, "pickNo": 9, "createdAt": null, "source": "sleeper", "keeper": false },
+    { "draftId": "1381850653902503936", "playerId": "rb5", "rosterId": 5, "amount": 180, "pickNo": 10, "createdAt": null, "source": "sleeper", "keeper": false },
+    { "draftId": "1381850653902503936", "playerId": "qb6", "rosterId": 6, "amount": 20, "pickNo": 11, "createdAt": null, "source": "sleeper", "keeper": false },
+    { "draftId": "1381850653902503936", "playerId": "rb6", "rosterId": 6, "amount": 173, "pickNo": 12, "createdAt": null, "source": "sleeper", "keeper": false },
+    { "draftId": "1381850653902503936", "playerId": "qb7", "rosterId": 7, "amount": 20, "pickNo": 13, "createdAt": null, "source": "sleeper", "keeper": false },
+    { "draftId": "1381850653902503936", "playerId": "rb7", "rosterId": 7, "amount": 180, "pickNo": 14, "createdAt": null, "source": "sleeper", "keeper": false },
+    { "draftId": "1381850653902503936", "playerId": "qb8", "rosterId": 8, "amount": 20, "pickNo": 15, "createdAt": null, "source": "sleeper", "keeper": false },
+    { "draftId": "1381850653902503936", "playerId": "rb8", "rosterId": 8, "amount": 180, "pickNo": 16, "createdAt": null, "source": "sleeper", "keeper": false },
+    { "draftId": "1381850653902503936", "playerId": "qb9", "rosterId": 9, "amount": 20, "pickNo": 17, "createdAt": null, "source": "sleeper", "keeper": false },
+    { "draftId": "1381850653902503936", "playerId": "rb9", "rosterId": 9, "amount": 178, "pickNo": 18, "createdAt": null, "source": "sleeper", "keeper": false },
+    { "draftId": "1381850653902503936", "playerId": "qb10", "rosterId": 10, "amount": 20, "pickNo": 19, "createdAt": null, "source": "sleeper", "keeper": false },
+    { "draftId": "1381850653902503936", "playerId": "rb10", "rosterId": 10, "amount": 180, "pickNo": 20, "createdAt": null, "source": "sleeper", "keeper": false },
+    { "draftId": "1381850653902503936", "playerId": "qb11", "rosterId": 11, "amount": 20, "pickNo": 21, "createdAt": null, "source": "sleeper", "keeper": false },
+    { "draftId": "1381850653902503936", "playerId": "rb11", "rosterId": 11, "amount": 180, "pickNo": 22, "createdAt": null, "source": "sleeper", "keeper": false },
+    { "draftId": "1381850653902503936", "playerId": "qb12", "rosterId": 12, "amount": 20, "pickNo": 23, "createdAt": null, "source": "sleeper", "keeper": false },
+    { "draftId": "1381850653902503936", "playerId": "rb12", "rosterId": 12, "amount": 180, "pickNo": 24, "createdAt": null, "source": "sleeper", "keeper": false }
+  ],
+  "lastUpdatedAt": "2026-07-26T15:00:00.000Z"
+}

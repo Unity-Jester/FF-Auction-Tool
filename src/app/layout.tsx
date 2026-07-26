@@ -6,6 +6,7 @@ import { Providers } from "./providers";
 export const metadata: Metadata = {
   title: "Sleeper Auction Companion",
   description: "Auction intelligence for Sleeper drafts.",
+  icons: { icon: "/favicon.ico" },
 };
 
 export default function RootLayout({

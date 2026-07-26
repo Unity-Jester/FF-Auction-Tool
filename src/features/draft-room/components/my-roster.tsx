@@ -35,6 +35,7 @@ export function MyRoster({
               <div className={styles.correction}>
                 <small>Local correction</small>
                 <button
+                  className={styles.criticalAction}
                   type="button"
                   aria-label={`Reverse correction for ${player.name}`}
                   onClick={() => onReverseCorrection?.(player.id)}
@@ -52,6 +53,7 @@ export function MyRoster({
           <div key={correction.playerId} className={styles.correction}>
             <small><strong>Local correction</strong> · {correction.playerName} · ${correction.amount}</small>
             <button
+              className={styles.criticalAction}
               type="button"
               aria-label={`Reverse correction for ${correction.playerName}`}
               onClick={() => onReverseCorrection?.(correction.playerId)}
