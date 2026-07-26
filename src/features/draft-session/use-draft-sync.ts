@@ -4,9 +4,37 @@ import { useQuery } from "@tanstack/react-query";
 import { useRef } from "react";
 
 import type { DraftSnapshot } from "@/domain/draft/types";
+import { reconcileDraft } from "./reconcile";
+import { parseDraftApiResponse, parseDraftSnapshot } from "./validate";
 
 export type DraftSyncStatus = "fresh" | "stale" | "offline";
-export type DraftFetcher = (draftId: string) => Promise<DraftSnapshot>;
+export type DraftFetcher = (draftId: string) => Promise<unknown>;
+type SyncedDraft = {
+  snapshot: DraftSnapshot;
+  lastUpdatedAt: string;
+};
+
+function isSyncedDraft(value: unknown): value is SyncedDraft {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    "snapshot" in value &&
+    "lastUpdatedAt" in value &&
+    typeof value.lastUpdatedAt === "string"
+  );
+}
+
+function shareSyncedDraft(previous: unknown, next: unknown): unknown {
+  if (!isSyncedDraft(next) || !isSyncedDraft(previous)) return next;
+  const snapshot = reconcileDraft(
+    { snapshot: previous.snapshot, localCorrections: [] },
+    next.snapshot,
+  ).snapshot;
+  return snapshot === previous.snapshot &&
+    next.lastUpdatedAt === previous.lastUpdatedAt
+    ? previous
+    : { snapshot, lastUpdatedAt: next.lastUpdatedAt };
+}
 
 const validDraftId = (draftId: string | null | undefined) =>
   typeof draftId === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(draftId);
@@ -14,17 +42,13 @@ const validDraftId = (draftId: string | null | undefined) =>
 async function fetchDraft(draftId: string): Promise<DraftSnapshot> {
   const response = await fetch(`/api/sleeper/drafts/${encodeURIComponent(draftId)}`);
   if (!response.ok) throw new Error("Unable to refresh Sleeper draft");
-  const body: unknown = await response.json();
-  if (!body || typeof body !== "object" || !("snapshot" in body)) {
-    throw new Error("Sleeper returned an invalid draft response");
-  }
-  return (body as { snapshot: DraftSnapshot }).snapshot;
+  return parseDraftApiResponse(await response.json(), draftId);
 }
 
 function interval(snapshot: DraftSnapshot | undefined, failures: number) {
+  if (snapshot?.status === "complete") return false;
   if (failures > 0) return [5_000, 10_000, 30_000][Math.min(failures - 1, 2)];
   if (!snapshot) return 3_000;
-  if (snapshot.status === "complete") return false;
   return snapshot.status === "pre" ? 30_000 : 3_000;
 }
 
@@ -34,16 +58,19 @@ export function useDraftSync(
 ) {
   const enabled = validDraftId(draftId);
   const failures = useRef({ draftId, count: 0 });
-  const query = useQuery({
+  const query = useQuery<SyncedDraft>({
     queryKey: ["sleeper-draft", draftId],
     queryFn: async () => {
       if (failures.current.draftId !== draftId) {
         failures.current = { draftId, count: 0 };
       }
       try {
-        const snapshot = await request(draftId as string);
+        const snapshot = parseDraftSnapshot(
+          await request(draftId as string),
+          draftId as string,
+        );
         failures.current.count = 0;
-        return snapshot;
+        return { snapshot, lastUpdatedAt: snapshot.lastUpdatedAt };
       } catch (error) {
         failures.current.count += 1;
         throw error;
@@ -53,10 +80,11 @@ export function useDraftSync(
     retry: false,
     refetchInterval: (current) =>
       interval(
-        current.state.data,
+        current.state.data?.snapshot,
         failures.current.count,
       ),
     refetchIntervalInBackground: false,
+    structuralSharing: shareSyncedDraft,
   });
   const syncStatus: DraftSyncStatus = !enabled || (!query.data && query.isError)
     ? "offline"
@@ -65,7 +93,7 @@ export function useDraftSync(
       : "fresh";
 
   return {
-    data: query.data,
+    data: query.data?.snapshot,
     syncStatus,
     lastUpdatedAt: query.data?.lastUpdatedAt ?? null,
     retry: query.refetch,

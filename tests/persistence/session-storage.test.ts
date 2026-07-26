@@ -5,6 +5,7 @@ import {
   clearSession,
   loadSession,
   saveSession,
+  SESSION_LIMITS,
   sessionStorageKey,
 } from "@/persistence/session-storage";
 
@@ -25,6 +26,17 @@ const strategy: StrategyConfig = {
 };
 
 beforeEach(() => localStorage.clear());
+
+const session = (overrides: Record<string, unknown> = {}) => ({
+  version: 1 as const,
+  draftId: "draft-1",
+  strategy,
+  preferences: {},
+  localCorrections: [],
+  csvProjectionOverrides: [],
+  savedAt: "2026-07-25T12:00:00.000Z",
+  ...overrides,
+});
 
 describe("session storage", () => {
   it("round-trips only a valid version 1 session for its draft", () => {
@@ -82,6 +94,99 @@ describe("session storage", () => {
       }),
     );
 
+    expect(loadSession("draft-1")).toBeNull();
+  });
+
+  it("enforces strategy ranges and exact supported position budget keys", () => {
+    saveSession(session({ strategy: { ...strategy, starterBudgetShare: 1.1 } }));
+    expect(localStorage.getItem(sessionStorageKey("draft-1"))).toBeNull();
+
+    saveSession(session({ strategy: { ...strategy, minReserve: -1 } }));
+    expect(localStorage.getItem(sessionStorageKey("draft-1"))).toBeNull();
+
+    saveSession(session({
+      strategy: {
+        ...strategy,
+        positionBudgets: { ...strategy.positionBudgets, IDP: 0.2 },
+      },
+    }));
+    expect(localStorage.getItem(sessionStorageKey("draft-1"))).toBeNull();
+  });
+
+  it("rejects local corrections from another draft on save and load", () => {
+    const foreignCorrection = {
+      draftId: "draft-2",
+      playerId: "player-1",
+      rosterId: 1,
+      amount: 20,
+      pickNo: 1,
+      createdAt: null,
+      source: "local",
+      keeper: false,
+    };
+    saveSession(session({ localCorrections: [foreignCorrection] }));
+    expect(localStorage.getItem(sessionStorageKey("draft-1"))).toBeNull();
+
+    localStorage.setItem(
+      sessionStorageKey("draft-1"),
+      JSON.stringify(session({ localCorrections: [foreignCorrection] })),
+    );
+    expect(loadSession("draft-1")).toBeNull();
+  });
+
+  it("bounds collection counts, record keys, string lengths, and stored JSON bytes", () => {
+    saveSession(session({
+      preferences: Object.fromEntries(
+        Array.from({ length: SESSION_LIMITS.maxPreferences + 1 }, (_, index) => [
+          `player-${index}`,
+          "target",
+        ]),
+      ),
+    }));
+    expect(localStorage.getItem(sessionStorageKey("draft-1"))).toBeNull();
+
+    saveSession(session({ preferences: { ["x".repeat(SESSION_LIMITS.maxStringLength + 1)]: "target" } }));
+    expect(localStorage.getItem(sessionStorageKey("draft-1"))).toBeNull();
+
+    const correction = {
+      draftId: "draft-1",
+      playerId: "player-1",
+      rosterId: 1,
+      amount: 20,
+      pickNo: 1,
+      createdAt: null,
+      source: "local",
+      keeper: false,
+    };
+    saveSession(session({
+      localCorrections: Array.from(
+        { length: SESSION_LIMITS.maxCorrections + 1 },
+        (_, index) => ({ ...correction, playerId: `player-${index}` }),
+      ),
+    }));
+    expect(localStorage.getItem(sessionStorageKey("draft-1"))).toBeNull();
+
+    const projection = {
+      playerId: "player-1",
+      name: "Player One",
+      team: "CHI",
+      positions: ["RB"],
+      stats: { rushYards: 1_000 },
+      source: "csv",
+      updatedAt: "2026-07-25T12:00:00.000Z",
+    };
+    saveSession(session({
+      csvProjectionOverrides: Array.from(
+        { length: SESSION_LIMITS.maxCsvProjections + 1 },
+        (_, index) => ({ ...projection, playerId: `player-${index}` }),
+      ),
+    }));
+    expect(localStorage.getItem(sessionStorageKey("draft-1"))).toBeNull();
+
+    localStorage.setItem(
+      sessionStorageKey("draft-1"),
+      " ".repeat(SESSION_LIMITS.maxBytes + 1),
+    );
     expect(loadSession("draft-1")).toBeNull();
   });
 

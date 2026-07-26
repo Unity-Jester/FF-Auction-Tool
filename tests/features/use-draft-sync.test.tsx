@@ -4,10 +4,27 @@ import { type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { DraftSnapshot } from "@/domain/draft/types";
+import { createLeagueConfig } from "@/domain/league/defaults";
 import { useDraftSync } from "@/features/draft-session/use-draft-sync";
 
 const response = (status: DraftSnapshot["status"]): DraftSnapshot => ({
-  draftId: "draft-1", status, type: "auction", league: {} as DraftSnapshot["league"], teams: [], purchases: [], lastUpdatedAt: "2026-07-25T12:00:00.000Z",
+  draftId: "draft-1",
+  status,
+  type: "auction",
+  league: createLeagueConfig({
+    teams: 2,
+    budget: 200,
+    starters: { QB: 1, RB: 1, WR: 1, TE: 1, K: 0, DEF: 0 },
+    bench: 1,
+    flex: [],
+    receptionPoints: 0.5,
+  }),
+  teams: [
+    { rosterId: 1, name: "One", remainingBudget: 200, openSlots: 5, playerIds: [] },
+    { rosterId: 2, name: "Two", remainingBudget: 200, openSlots: 5, playerIds: [] },
+  ],
+  purchases: [],
+  lastUpdatedAt: "2026-07-25T12:00:00.000Z",
 });
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -43,6 +60,54 @@ describe("useDraftSync", () => {
     expect(result.current.syncStatus).toBe("stale");
     expect(result.current.data?.draftId).toBe("draft-1");
     expect(result.current.retry).toEqual(expect.any(Function));
+  });
+
+  it("does not resume polling when a completed draft manual refresh fails", async () => {
+    vi.useFakeTimers();
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(response("complete"))
+      .mockRejectedValueOnce(new Error("offline"));
+    const { result } = renderHook(() => useDraftSync("draft-1", fetcher), { wrapper });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+    await act(async () => { await result.current.retry(); });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("treats a malformed successful response as stale and retains the last valid snapshot", async () => {
+    vi.useFakeTimers();
+    const valid = response("drafting");
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(valid)
+      .mockResolvedValueOnce({ ...valid, status: "unknown" });
+    const { result } = renderHook(() => useDraftSync("draft-1", fetcher), { wrapper });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const lastValidSnapshot = result.current.data;
+    await act(async () => { await vi.advanceTimersByTimeAsync(3_001); });
+
+    expect(result.current.syncStatus).toBe("stale");
+    expect(result.current.data).toBe(lastValidSnapshot);
+  });
+
+  it("keeps draft content identity while exposing the newest synchronization time", async () => {
+    vi.useFakeTimers();
+    const initial = response("drafting");
+    const refreshed = {
+      ...response("drafting"),
+      lastUpdatedAt: "2026-07-25T12:00:03.000Z",
+    };
+    const fetcher = vi.fn().mockResolvedValueOnce(initial).mockResolvedValue(refreshed);
+    const { result } = renderHook(() => useDraftSync("draft-1", fetcher), { wrapper });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const draftState = result.current.data;
+    await act(async () => { await vi.advanceTimersByTimeAsync(3_001); });
+
+    expect(result.current.data).toBe(draftState);
+    expect(result.current.lastUpdatedAt).toBe("2026-07-25T12:00:03.000Z");
   });
 
   it("backs off initial failures before a first successful snapshot", async () => {

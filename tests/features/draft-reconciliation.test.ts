@@ -63,6 +63,66 @@ describe("reconcileDraft", () => {
     expect(resolved.localCorrections).toEqual([]);
   });
 
+  it("retires a matching local correction when Sleeper supplies different timestamp metadata", () => {
+    const correction = purchase({ amount: 37, source: "local", createdAt: null });
+    const previous = { snapshot: snapshot([purchase()]), localCorrections: [correction] };
+
+    const resolved = reconcileDraft(
+      previous,
+      snapshot([purchase({ amount: 37, createdAt: "2026-07-25T13:00:00.000Z" })]),
+    );
+
+    expect(resolved.localCorrections).toEqual([]);
+  });
+
+  it("orders equal picks by timestamp epoch with missing timestamps last", () => {
+    const result = reconcileDraft(
+      { snapshot: snapshot([]), localCorrections: [] },
+      snapshot([
+        purchase({ playerId: "later", createdAt: "2026-07-25T08:00:00-05:00" }),
+        purchase({ playerId: "missing", createdAt: null }),
+        purchase({ playerId: "earlier", createdAt: "2026-07-25T12:00:00.000Z" }),
+      ]),
+    );
+
+    expect(result.snapshot.purchases.map(({ playerId }) => playerId)).toEqual([
+      "earlier",
+      "later",
+      "missing",
+    ]);
+  });
+
+  it("rejects snapshots and purchases belonging to another draft", () => {
+    const previous = { snapshot: snapshot([purchase()]), localCorrections: [] };
+
+    expect(
+      reconcileDraft(previous, { ...snapshot([]), draftId: "draft-2" }),
+    ).toBe(previous);
+    expect(
+      reconcileDraft(previous, snapshot([purchase({ draftId: "draft-2" })]))
+        .snapshot.purchases,
+    ).toEqual([]);
+  });
+
+  it("rejects dangerous identifiers instead of allowing ambiguous identities", () => {
+    const result = reconcileDraft(
+      { snapshot: snapshot([]), localCorrections: [] },
+      snapshot([purchase({ playerId: "player\u0000roster" })]),
+    );
+
+    expect(result.snapshot.purchases).toEqual([]);
+  });
+
+  it("preserves draft state when only synchronization time changes", () => {
+    const previous = { snapshot: snapshot([purchase()]), localCorrections: [] };
+    const incoming = {
+      ...snapshot([purchase()]),
+      lastUpdatedAt: "2026-07-25T12:00:03.000Z",
+    };
+
+    expect(reconcileDraft(previous, incoming)).toBe(previous);
+  });
+
   it("drops malformed and duplicate purchases without allowing NaN into state", () => {
     const result = reconcileDraft(
       { snapshot: snapshot([]), localCorrections: [] },

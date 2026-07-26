@@ -6,25 +6,33 @@ export type DraftSessionState = {
 };
 
 const identity = (purchase: DraftPurchase) =>
-  `${purchase.draftId}\u0000${purchase.playerId}\u0000${purchase.rosterId}`;
+  JSON.stringify([purchase.draftId, purchase.playerId, purchase.rosterId]);
 
-const timestamp = (value: string | null) => value ?? "";
+const identifier = (value: unknown): value is string =>
+  typeof value === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(value);
+
+const timestamp = (value: string | null) =>
+  value === null ? Number.POSITIVE_INFINITY : Date.parse(value);
 
 function comparePurchases(a: DraftPurchase, b: DraftPurchase) {
+  const timestampDifference = timestamp(a.createdAt) - timestamp(b.createdAt);
   return (
     a.pickNo - b.pickNo ||
-    timestamp(a.createdAt).localeCompare(timestamp(b.createdAt)) ||
+    (Number.isNaN(timestampDifference) ? 0 : timestampDifference) ||
     a.playerId.localeCompare(b.playerId)
   );
 }
 
-function validPurchase(value: DraftPurchase, source: DraftPurchase["source"]) {
+function validPurchase(
+  value: DraftPurchase,
+  source: DraftPurchase["source"],
+  draftId: string,
+) {
   return (
     value.source === source &&
-    typeof value.draftId === "string" &&
-    value.draftId.length > 0 &&
-    typeof value.playerId === "string" &&
-    value.playerId.length > 0 &&
+    value.draftId === draftId &&
+    identifier(value.draftId) &&
+    identifier(value.playerId) &&
     Number.isInteger(value.rosterId) &&
     value.rosterId > 0 &&
     Number.isFinite(value.amount) &&
@@ -40,10 +48,11 @@ function validPurchase(value: DraftPurchase, source: DraftPurchase["source"]) {
 function canonicalPurchases(
   purchases: DraftPurchase[],
   source: DraftPurchase["source"],
+  draftId: string,
 ): DraftPurchase[] {
   const unique = new Map<string, DraftPurchase>();
   for (const purchase of purchases) {
-    if (!validPurchase(purchase, source)) continue;
+    if (!validPurchase(purchase, source, draftId)) continue;
     const key = identity(purchase);
     const prior = unique.get(key);
     // A duplicate from the same response is ignored; the first record is stable.
@@ -67,7 +76,6 @@ function exactMatch(local: DraftPurchase, sleeper: DraftPurchase) {
     identity(local) === identity(sleeper) &&
     local.amount === sleeper.amount &&
     local.pickNo === sleeper.pickNo &&
-    local.createdAt === sleeper.createdAt &&
     local.keeper === sleeper.keeper
   );
 }
@@ -77,16 +85,38 @@ export function reconcileDraft(
   previous: DraftSessionState,
   incoming: DraftSnapshot,
 ): DraftSessionState {
-  const purchases = canonicalPurchases(incoming.purchases, "sleeper");
-  const localCorrections = canonicalPurchases(previous.localCorrections, "local").filter(
+  if (
+    !identifier(previous.snapshot.draftId) ||
+    incoming.draftId !== previous.snapshot.draftId
+  ) {
+    return previous;
+  }
+  const purchases = canonicalPurchases(
+    incoming.purchases,
+    "sleeper",
+    incoming.draftId,
+  );
+  const localCorrections = canonicalPurchases(
+    previous.localCorrections,
+    "local",
+    incoming.draftId,
+  ).filter(
     (local) => !purchases.some((authoritative) => exactMatch(local, authoritative)),
   );
   const samePurchases = equivalentPurchases(previous.snapshot.purchases, purchases);
   const sameCorrections = equivalentPurchases(previous.localCorrections, localCorrections);
   const sameSnapshot =
     samePurchases &&
-    JSON.stringify({ ...previous.snapshot, purchases: undefined }) ===
-      JSON.stringify({ ...incoming, purchases: undefined });
+    JSON.stringify({
+      ...previous.snapshot,
+      purchases: undefined,
+      lastUpdatedAt: undefined,
+    }) ===
+      JSON.stringify({
+        ...incoming,
+        purchases: undefined,
+        lastUpdatedAt: undefined,
+      });
 
   if (sameSnapshot && sameCorrections) return previous;
 
