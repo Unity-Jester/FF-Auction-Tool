@@ -1,6 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import { useRef } from "react";
 
 import type { DraftSnapshot } from "@/domain/draft/types";
 
@@ -21,9 +22,9 @@ async function fetchDraft(draftId: string): Promise<DraftSnapshot> {
 }
 
 function interval(snapshot: DraftSnapshot | undefined, failures: number) {
+  if (failures > 0) return [5_000, 10_000, 30_000][Math.min(failures - 1, 2)];
   if (!snapshot) return 3_000;
   if (snapshot.status === "complete") return false;
-  if (failures > 0) return [5_000, 10_000, 30_000][Math.min(failures - 1, 2)];
   return snapshot.status === "pre" ? 30_000 : 3_000;
 }
 
@@ -32,15 +33,28 @@ export function useDraftSync(
   request: DraftFetcher = fetchDraft,
 ) {
   const enabled = validDraftId(draftId);
+  const failures = useRef({ draftId, count: 0 });
   const query = useQuery({
     queryKey: ["sleeper-draft", draftId],
-    queryFn: () => request(draftId as string),
+    queryFn: async () => {
+      if (failures.current.draftId !== draftId) {
+        failures.current = { draftId, count: 0 };
+      }
+      try {
+        const snapshot = await request(draftId as string);
+        failures.current.count = 0;
+        return snapshot;
+      } catch (error) {
+        failures.current.count += 1;
+        throw error;
+      }
+    },
     enabled,
     retry: false,
     refetchInterval: (current) =>
       interval(
         current.state.data,
-        current.state.fetchFailureCount,
+        failures.current.count,
       ),
     refetchIntervalInBackground: false,
   });

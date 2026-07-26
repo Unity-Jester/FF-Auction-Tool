@@ -45,6 +45,27 @@ describe("useDraftSync", () => {
     expect(result.current.retry).toEqual(expect.any(Function));
   });
 
+  it("backs off initial failures before a first successful snapshot", async () => {
+    vi.useFakeTimers();
+    const fetcher = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue(response("drafting"));
+    renderHook(() => useDraftSync("draft-1", fetcher), { wrapper });
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(4_999); });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(2); });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(9_000); });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_001); });
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
   it("does not request an invalid draft ID", () => {
     const fetcher = vi.fn();
     renderHook(() => useDraftSync("not valid", fetcher), { wrapper });
