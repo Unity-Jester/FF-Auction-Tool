@@ -52,6 +52,52 @@ export interface SavedStrategyRepository {
   getWarnings?(): string[];
 }
 
+function expandedPostgresNumberLength(value: number): number {
+  const token = JSON.stringify(value);
+  const exponentAt = token.indexOf("e");
+  if (exponentAt === -1) return token.length;
+  const coefficient = token.slice(0, exponentAt);
+  const exponent = Number(token.slice(exponentAt + 1));
+  const negative = coefficient.startsWith("-");
+  const unsigned = negative ? coefficient.slice(1) : coefficient;
+  const decimalAt = unsigned.indexOf(".");
+  const digits = unsigned.replace(".", "");
+  const originalDecimalPosition =
+    decimalAt === -1 ? unsigned.length : decimalAt;
+  const decimalPosition = originalDecimalPosition + exponent;
+  let expandedLength: number;
+  if (decimalPosition <= 0) {
+    expandedLength = 2 - decimalPosition + digits.length;
+  } else if (decimalPosition >= digits.length) {
+    expandedLength = decimalPosition;
+  } else {
+    expandedLength = digits.length + 1;
+  }
+  return expandedLength + (negative ? 1 : 0);
+}
+
+function postgresNumberExpansion(value: unknown): number {
+  if (typeof value === "number") {
+    return Math.max(
+      0,
+      expandedPostgresNumberLength(value) - JSON.stringify(value).length,
+    );
+  }
+  if (Array.isArray(value)) {
+    return value.reduce(
+      (total, item) => total + postgresNumberExpansion(item),
+      0,
+    );
+  }
+  if (value && typeof value === "object") {
+    return Object.values(value).reduce(
+      (total, item) => total + postgresNumberExpansion(item),
+      0,
+    );
+  }
+  return 0;
+}
+
 export function estimatedPostgresJsonBytes(value: unknown): number {
   const compact = JSON.stringify(value);
   let separators = 0;
@@ -68,9 +114,12 @@ export function estimatedPostgresJsonBytes(value: unknown): number {
       separators += 1;
     }
   }
-  // jsonb::text adds spaces after structural separators. The fixed margin covers
-  // numeric normalization differences between JavaScript and PostgreSQL.
-  return new TextEncoder().encode(compact).byteLength + separators + 256;
+  // jsonb::text adds spaces after structural separators and expands exponent
+  // notation (for example 1e-7 becomes 0.0000001).
+  return new TextEncoder().encode(compact).byteLength +
+    separators +
+    postgresNumberExpansion(value) +
+    256;
 }
 
 export function parseSavedStrategy(value: unknown): SavedStrategy {

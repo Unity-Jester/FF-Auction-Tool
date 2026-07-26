@@ -34,6 +34,7 @@ const saved: SavedStrategy = {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 function memoryStorage(): Storage {
@@ -141,6 +142,24 @@ describe("saved strategy repository contract", () => {
       valueOverrides[`p${index}`] = index;
       index += 1;
     }
+    expect(new TextEncoder().encode(JSON.stringify(strategy)).byteLength)
+      .toBeLessThan(MAX_STRATEGY_BYTES);
+    expect(estimatedPostgresJsonBytes(strategy)).toBeGreaterThan(
+      MAX_STRATEGY_BYTES,
+    );
+    await expect(new BrowserStrategyRepository(memoryStorage()).save({
+      ...saved,
+      strategy,
+    })).rejects.toThrow("32 KB");
+  });
+
+  it("accounts for PostgreSQL expanding exponential numbers in jsonb text", async () => {
+    const strategy = {
+      ...saved.strategy,
+      valueOverrides: Object.fromEntries(
+        Array.from({ length: 1_900 }, (_, index) => [`p${index}`, 1e-7]),
+      ),
+    };
     expect(new TextEncoder().encode(JSON.stringify(strategy)).byteLength)
       .toBeLessThan(MAX_STRATEGY_BYTES);
     expect(estimatedPostgresJsonBytes(strategy)).toBeGreaterThan(
@@ -281,9 +300,27 @@ describe("saved strategy repository contract", () => {
       url: "https://project.supabase.co",
       publicKey: "legacy",
     });
+    const legacyAnonJwt =
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
+      "eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InByb2plY3QiLCJyb2xlIjoiYW5vbiJ9." +
+      "signature";
+    expect(parsePublicSupabaseConfig({
+      url: "https://project.supabase.co",
+      anonKey: legacyAnonJwt,
+    })).toEqual({
+      url: "https://project.supabase.co",
+      publicKey: legacyAnonJwt,
+    });
     expect(parsePublicSupabaseConfig({
       url: "https://project.supabase.co",
       publishableKey: "sb_secret_must-never-reach-browser",
+    })).toBeNull();
+    expect(parsePublicSupabaseConfig({
+      url: "https://project.supabase.co",
+      anonKey:
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
+        "eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InByb2plY3QiLCJyb2xlIjoic2VydmljZV9yb2xlIn0." +
+        "signature",
     })).toBeNull();
   });
 
@@ -331,6 +368,29 @@ describe("saved strategy repository contract", () => {
     await expect(new BrowserStrategyRepository(storage).save(saved)).rejects.toThrow(
       "This browser could not save the strategy.",
     );
+    expect(storage.getItem("sleeper-auction-companion:saved-strategies:v1")).toBeNull();
+  });
+
+  it("bounds the no-Web-Locks cross-tab fallback when another tab holds it", async () => {
+    vi.useFakeTimers();
+    const storage = memoryStorage();
+    storage.setItem(
+      "sleeper-auction-companion:saved-strategies:lock:foreign-tab",
+      JSON.stringify({
+        owner: "foreign-tab",
+        choosing: false,
+        ticket: 1,
+        expiresAt: Date.now() + 10_000,
+      }),
+    );
+    const saving = new BrowserStrategyRepository(storage).save(saved);
+    const rejection = expect(saving).rejects.toThrow(
+      "This browser could not save the strategy.",
+    );
+
+    await vi.advanceTimersByTimeAsync(2_100);
+
+    await rejection;
     expect(storage.getItem("sleeper-auction-companion:saved-strategies:v1")).toBeNull();
   });
 

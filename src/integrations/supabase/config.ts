@@ -33,6 +33,28 @@ function normalizedKey(value: RawPublicSupabaseConfig): string {
   );
 }
 
+function safePublicKey(value: string): boolean {
+  const normalized = value.toLowerCase();
+  if (
+    normalized.startsWith("sb_secret_") ||
+    normalized.includes("service_role")
+  ) {
+    return false;
+  }
+  const jwtParts = value.split(".");
+  if (jwtParts.length !== 3) return true;
+  try {
+    const payload = jwtParts[1]
+      .replaceAll("-", "+")
+      .replaceAll("_", "/")
+      .padEnd(Math.ceil(jwtParts[1].length / 4) * 4, "=");
+    const role = JSON.parse(atob(payload)) as { role?: unknown };
+    return role.role === "anon";
+  } catch {
+    return false;
+  }
+}
+
 export function parsePublicSupabaseConfig(
   value: RawPublicSupabaseConfig,
 ): PublicSupabaseConfig | null {
@@ -41,8 +63,7 @@ export function parsePublicSupabaseConfig(
   if (
     !url.success ||
     !publicKey ||
-    publicKey.startsWith("sb_secret_") ||
-    publicKey.toLowerCase().includes("service_role")
+    !safePublicKey(publicKey)
   ) {
     return null;
   }

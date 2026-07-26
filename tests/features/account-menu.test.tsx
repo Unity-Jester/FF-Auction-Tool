@@ -60,6 +60,7 @@ describe("AccountMenu", () => {
   });
 
   it("offers optional email sign-in without blocking guest connection", async () => {
+    window.history.replaceState({}, "", "/?draft=123#saved");
     const user = userEvent.setup();
     render(
       <>
@@ -85,6 +86,11 @@ describe("AccountMenu", () => {
         captchaToken: "verified-captcha-token",
       }),
     }));
+    const latestSignIn = auth.signInWithOtp.mock.calls.at(-1) as unknown as
+      | [{ options: { emailRedirectTo: string } }]
+      | undefined;
+    const callback = new URL(latestSignIn?.[0].options.emailRedirectTo ?? "");
+    expect(callback.searchParams.get("next")).toBe("/?draft=123#saved");
     expect(await screen.findByRole("status")).toHaveTextContent(
       "Check your email for a sign-in link.",
     );
@@ -163,5 +169,21 @@ describe("AccountMenu", () => {
     );
     expect(`${window.location.pathname}${window.location.search}${window.location.hash}`)
       .toBe("/?draft=123#saved");
+  });
+
+  it("does not consume a callback error marker when the account client is unavailable", async () => {
+    window.history.replaceState({}, "", "/?draft=123&auth=error#saved");
+    const { container } = render(
+      <AccountMenu
+        config={configured}
+        createClient={() => { throw new Error("client unavailable"); }}
+        CaptchaComponent={FakeCaptcha}
+      />,
+    );
+    await Promise.resolve();
+
+    expect(container).toBeEmptyDOMElement();
+    expect(`${window.location.pathname}${window.location.search}${window.location.hash}`)
+      .toBe("/?draft=123&auth=error#saved");
   });
 });

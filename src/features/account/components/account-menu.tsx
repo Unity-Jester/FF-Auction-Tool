@@ -67,7 +67,7 @@ export function AccountMenu({
   const [captchaAttempt, setCaptchaAttempt] = useState(0);
 
   useEffect(() => {
-    if (!validConfig) return;
+    if (!client) return;
     const marker = new URL(window.location.href);
     if (marker.searchParams.get("auth") !== "error") return;
     const revealError = window.setTimeout(() => {
@@ -83,7 +83,7 @@ export function AccountMenu({
       );
     }, 0);
     return () => window.clearTimeout(revealError);
-  }, [validConfig]);
+  }, [client]);
 
   useEffect(() => {
     if (!validConfig || createClient) return;
@@ -129,7 +129,8 @@ export function AccountMenu({
     setMessage("");
     setError("");
     setPending(true);
-    const next = `${window.location.pathname}${window.location.search}`;
+    const next =
+      `${window.location.pathname}${window.location.search}${window.location.hash}`;
     const callback = new URL("/auth/callback", window.location.origin);
     callback.searchParams.set("next", next.startsWith("/") ? next : "/");
     try {

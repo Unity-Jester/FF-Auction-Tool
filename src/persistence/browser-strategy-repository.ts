@@ -6,7 +6,10 @@ import {
 
 const STORAGE_KEY = "sleeper-auction-companion:saved-strategies:v1";
 const LOCK_NAME = "sleeper-auction-companion:saved-strategies";
+const FALLBACK_LOCK_PREFIX = `${LOCK_NAME}:lock:`;
 const LOCK_TIMEOUT_MS = 2_000;
+const FALLBACK_LOCK_LEASE_MS = 5_000;
+const FALLBACK_LOCK_POLL_MS = 20;
 const mutationQueues = new WeakMap<Storage, Promise<void>>();
 const unavailableStorage: Storage = {
   length: 0,
@@ -22,6 +25,106 @@ export function browserStrategyStorage(): Storage {
     return window.localStorage;
   } catch {
     return unavailableStorage;
+  }
+}
+
+type FallbackLockClaim = {
+  owner: string;
+  choosing: boolean;
+  ticket: number;
+  expiresAt: number;
+};
+
+function fallbackOwner(): string {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return `${Date.now()}-${Math.random()}`;
+  }
+}
+
+function fallbackClaims(storage: Storage, now: number): FallbackLockClaim[] {
+  const keys = Array.from(
+    { length: storage.length },
+    (_, index) => storage.key(index),
+  ).filter((key): key is string => key?.startsWith(FALLBACK_LOCK_PREFIX) ?? false);
+  const claims: FallbackLockClaim[] = [];
+  for (const key of keys) {
+    try {
+      const claim = JSON.parse(storage.getItem(key) ?? "") as FallbackLockClaim;
+      if (
+        typeof claim.owner !== "string" ||
+        typeof claim.choosing !== "boolean" ||
+        !Number.isSafeInteger(claim.ticket) ||
+        claim.ticket < 0 ||
+        !Number.isFinite(claim.expiresAt)
+      ) {
+        storage.removeItem(key);
+      } else if (claim.expiresAt <= now) {
+        storage.removeItem(key);
+      } else {
+        claims.push(claim);
+      }
+    } catch {
+      storage.removeItem(key);
+    }
+  }
+  return claims;
+}
+
+function writeFallbackClaim(
+  storage: Storage,
+  key: string,
+  claim: Omit<FallbackLockClaim, "expiresAt">,
+): void {
+  storage.setItem(
+    key,
+    JSON.stringify({
+      ...claim,
+      expiresAt: Date.now() + FALLBACK_LOCK_LEASE_MS,
+    }),
+  );
+}
+
+function waitForFallbackPoll(): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, FALLBACK_LOCK_POLL_MS);
+  });
+}
+
+async function withCrossTabFallback<T>(
+  storage: Storage,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const owner = fallbackOwner();
+  const key = `${FALLBACK_LOCK_PREFIX}${owner}`;
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  let ticket = 0;
+  try {
+    writeFallbackClaim(storage, key, { owner, choosing: true, ticket });
+    const claims = fallbackClaims(storage, Date.now());
+    ticket = claims.reduce(
+      (highest, claim) => Math.max(highest, claim.ticket),
+      0,
+    ) + 1;
+    writeFallbackClaim(storage, key, { owner, choosing: false, ticket });
+
+    while (true) {
+      writeFallbackClaim(storage, key, { owner, choosing: false, ticket });
+      const blocker = fallbackClaims(storage, Date.now()).some((claim) => {
+        if (claim.owner === owner) return false;
+        if (claim.choosing) return true;
+        return claim.ticket < ticket ||
+          (claim.ticket === ticket && claim.owner < owner);
+      });
+      if (!blocker) return await operation();
+      if (Date.now() >= deadline) {
+        throw new Error("Saved strategies are busy in another tab.");
+      }
+      await waitForFallbackPoll();
+    }
+  } finally {
+    storage.removeItem(key);
   }
 }
 
@@ -50,7 +153,12 @@ async function withMutationLock<T>(
   operation: () => Promise<T>,
 ): Promise<T> {
   const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
-  if (!locks) return withInProcessLock(storage, operation);
+  if (!locks) {
+    return withInProcessLock(
+      storage,
+      () => withCrossTabFallback(storage, operation),
+    );
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), LOCK_TIMEOUT_MS);
   try {
