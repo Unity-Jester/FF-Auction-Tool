@@ -171,6 +171,71 @@ describe("AccountMenu", () => {
       .toBe("/?draft=123#saved");
   });
 
+  it("removes realistic Supabase auth-error details from the URL fragment", async () => {
+    window.history.replaceState(
+      { preserved: true },
+      "",
+      "/#error=access_denied&error_code=otp_expired&error_description=provider-secret-detail",
+    );
+    render(
+      <AccountMenu
+        config={configured}
+        createClient={() => ({ auth })}
+        CaptchaComponent={FakeCaptcha}
+      />,
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "That sign-in link could not be used. Request a new one or keep using guest mode.",
+    );
+    expect(screen.queryByText(/provider-secret-detail/)).not.toBeInTheDocument();
+    expect(`${window.location.pathname}${window.location.search}${window.location.hash}`)
+      .toBe("/");
+    expect(window.history.state).toEqual({ preserved: true });
+  });
+
+  it("preserves unrelated query and fragment values while removing auth-error details", async () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/?draft=123#error=access_denied&error_code=otp_expired&section=saved",
+    );
+    render(
+      <AccountMenu
+        config={configured}
+        createClient={() => ({ auth })}
+        CaptchaComponent={FakeCaptcha}
+      />,
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "That sign-in link could not be used.",
+    );
+    expect(`${window.location.pathname}${window.location.search}${window.location.hash}`)
+      .toBe("/?draft=123#section=saved");
+  });
+
+  it("leaves an ordinary application hash untouched", async () => {
+    window.history.replaceState({}, "", "/?draft=123#section");
+    render(
+      <AccountMenu
+        config={configured}
+        createClient={() => ({ auth })}
+        CaptchaComponent={FakeCaptcha}
+      />,
+    );
+    await Promise.resolve();
+
+    expect(screen.queryByText("That sign-in link could not be used."))
+      .not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Account" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    expect(`${window.location.pathname}${window.location.search}${window.location.hash}`)
+      .toBe("/?draft=123#section");
+  });
+
   it("does not consume a callback error marker when the account client is unavailable", async () => {
     window.history.replaceState({}, "", "/?draft=123&auth=error#saved");
     const { container } = render(

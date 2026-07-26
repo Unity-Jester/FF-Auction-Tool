@@ -32,6 +32,22 @@ type AccountClient = {
   };
 };
 
+const authErrorFragmentParams = [
+  "error",
+  "error_code",
+  "error_description",
+  "error_reason",
+  "error_uri",
+] as const;
+
+function recognizedAuthErrorFragment(url: URL): URLSearchParams | null {
+  if (!url.hash.includes("=")) return null;
+  const params = new URLSearchParams(url.hash.slice(1));
+  return authErrorFragmentParams.some((name) => params.has(name))
+    ? params
+    : null;
+}
+
 export function AccountMenu({
   config,
   createClient,
@@ -69,13 +85,27 @@ export function AccountMenu({
   useEffect(() => {
     if (!client) return;
     const marker = new URL(window.location.href);
-    if (marker.searchParams.get("auth") !== "error") return;
+    const fragmentParams = recognizedAuthErrorFragment(marker);
+    if (
+      marker.searchParams.get("auth") !== "error" &&
+      !fragmentParams
+    ) {
+      return;
+    }
     const revealError = window.setTimeout(() => {
       setOpen(true);
       setError(
         "That sign-in link could not be used. Request a new one or keep using guest mode.",
       );
       marker.searchParams.delete("auth");
+      if (fragmentParams) {
+        for (const name of authErrorFragmentParams) {
+          fragmentParams.delete(name);
+        }
+        marker.hash = fragmentParams.size > 0
+          ? `#${fragmentParams.toString()}`
+          : "";
+      }
       window.history.replaceState(
         window.history.state,
         "",
