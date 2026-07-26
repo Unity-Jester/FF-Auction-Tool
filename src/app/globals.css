@@ -82,6 +82,46 @@ button {
   transform: translateY(0);
 }
 
+.account-menu {
+  position: fixed;
+  z-index: 8;
+  top: var(--space-4);
+  right: var(--space-4);
+}
+
+.account-trigger {
+  border: 1px solid var(--color-line);
+  border-radius: 999px;
+  padding: 0 var(--space-4);
+  background: color-mix(in srgb, var(--color-surface) 92%, transparent);
+  color: var(--color-text-muted);
+}
+
+.account-panel {
+  width: min(22rem, calc(100vw - 2rem));
+  margin-top: var(--space-2);
+  padding: var(--space-4);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  background: var(--color-surface-raised);
+  box-shadow: 0 1rem 3rem rgb(0 0 0 / 35%);
+}
+
+.account-panel form,
+.account-panel label {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.account-panel input {
+  min-height: var(--target-size);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-canvas);
+  color: var(--color-text);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

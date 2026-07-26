@@ -111,6 +111,27 @@ describe("StrategyBuilder", () => {
     expect(push).toHaveBeenCalledWith("/draft/123456789012345678");
   });
 
+  it("saves and reloads a named strategy in guest mode", async () => {
+    const user = userEvent.setup();
+    render(<StrategyBuilder draftId="123456789012345678" league={league} />);
+    await user.type(screen.getByLabelText("Saved strategy name"), "Sunday plan");
+    await user.click(screen.getByRole("button", { name: "Save named strategy" }));
+    expect(await screen.findByText("Sunday plan")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Stars and scrubs" }));
+    expect(screen.getByText("Aggressive early spending")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Load Sunday plan" }));
+    expect(screen.getByText("Flexible auction plan")).toBeInTheDocument();
+  });
+
+  it("enforces the saved strategy name limit in the interface", () => {
+    render(<StrategyBuilder draftId="123456789012345678" league={league} />);
+    expect(screen.getByLabelText("Saved strategy name")).toHaveAttribute(
+      "maxlength",
+      "80",
+    );
+  });
+
   it("loads an existing plan and preserves its preferences and manual values", () => {
     const draftId = "223456789012345678";
     const existing = defaultStrategy(league);

@@ -1,10 +1,13 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import type { LeagueConfig, Position } from "@/domain/league/types";
 import type { PlayerPreference, StrategyConfig } from "@/domain/strategy/types";
+import { browserStrategyStorage } from "@/persistence/browser-strategy-repository";
+import type { SavedStrategy } from "@/persistence/saved-strategy-repository";
+import { repositoryForCurrentSession } from "@/persistence/strategy-repository-selector";
 import { loadSession, saveSession } from "@/persistence/session-storage";
 import { defaultStrategy } from "../default-strategies";
 
@@ -30,6 +33,55 @@ export function StrategyBuilder({
   );
   const [player, setPlayer] = useState("");
   const [manualValue, setManualInput] = useState("");
+  const [savedName, setSavedName] = useState("");
+  const [savedStrategies, setSavedStrategies] = useState<SavedStrategy[]>([]);
+  const [savedId, setSavedId] = useState<string | null>(null);
+  const [savedCreatedAt, setSavedCreatedAt] = useState<string | null>(null);
+  const [saveMessage, setSaveMessage] = useState("");
+  const [saveError, setSaveError] = useState("");
+  const accountEpoch = useRef(0);
+  const config = useMemo(() => ({
+    url: process.env.NEXT_PUBLIC_SUPABASE_URL,
+    anonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+  }), []);
+
+  const getRepository = () =>
+    repositoryForCurrentSession(config, browserStrategyStorage());
+
+  const refreshSaved = async () => {
+    const epoch = accountEpoch.current;
+    try {
+      const repository = await getRepository();
+      const records = await repository.list();
+      if (epoch !== accountEpoch.current) return;
+      setSavedStrategies(records);
+      setSaveError("");
+    } catch {
+      if (epoch !== accountEpoch.current) return;
+      setSavedStrategies([]);
+      setSaveError("Saved strategies are unavailable. Your current plan is unchanged.");
+    }
+  };
+
+  useEffect(() => {
+    const initialRefresh = window.setTimeout(() => void refreshSaved(), 0);
+    const onAuthChange = () => {
+      accountEpoch.current += 1;
+      setSavedId(null);
+      setSavedCreatedAt(null);
+      setSavedName("");
+      setSavedStrategies([]);
+      void refreshSaved();
+    };
+    window.addEventListener("strategy-auth-change", onAuthChange);
+    return () => {
+      accountEpoch.current += 1;
+      window.clearTimeout(initialRefresh);
+      window.removeEventListener("strategy-auth-change", onAuthChange);
+    };
+    // Configuration is fixed for the lifetime of the built client page.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const total = useMemo(
     () =>
       Object.values(strategy.positionBudgets).reduce(
@@ -69,6 +121,64 @@ export function StrategyBuilder({
       ...current,
       valueOverrides: { ...current.valueOverrides, [name]: value },
     }));
+  };
+  const saveNamedStrategy = async () => {
+    const epoch = accountEpoch.current;
+    const name = savedName.trim();
+    if (!name || name.length > 80) {
+      setSaveError("Strategy name must be between 1 and 80 characters.");
+      return;
+    }
+    const now = new Date().toISOString();
+    const record: SavedStrategy = {
+      id: savedId ?? crypto.randomUUID(),
+      name,
+      strategy,
+      createdAt: savedCreatedAt ?? now,
+      updatedAt: now,
+    };
+    try {
+      const repository = await getRepository();
+      await repository.save(record);
+      const records = await repository.list();
+      if (epoch !== accountEpoch.current) return;
+      setSavedId(record.id);
+      setSavedCreatedAt(record.createdAt);
+      setSaveMessage(`Saved “${name}”.`);
+      setSaveError("");
+      setSavedStrategies(records);
+    } catch {
+      if (epoch !== accountEpoch.current) return;
+      setSaveMessage("");
+      setSaveError("The strategy could not be saved. Your current plan is unchanged.");
+    }
+  };
+  const loadNamedStrategy = (record: SavedStrategy) => {
+    setStrategy(record.strategy);
+    setSavedId(record.id);
+    setSavedCreatedAt(record.createdAt);
+    setSavedName(record.name);
+    setSaveMessage(`Loaded “${record.name}”. Enter the draft room to use it.`);
+    setSaveError("");
+  };
+  const removeNamedStrategy = async (record: SavedStrategy) => {
+    const epoch = accountEpoch.current;
+    try {
+      const repository = await getRepository();
+      await repository.remove(record.id);
+      const records = await repository.list();
+      if (epoch !== accountEpoch.current) return;
+      if (savedId === record.id) {
+        setSavedId(null);
+        setSavedCreatedAt(null);
+      }
+      setSavedStrategies(records);
+      setSaveMessage(`Removed “${record.name}”.`);
+      setSaveError("");
+    } catch {
+      if (epoch !== accountEpoch.current) return;
+      setSaveError("The saved strategy could not be removed.");
+    }
   };
   const enter = () => {
     if (!valid) return;
@@ -359,6 +469,56 @@ export function StrategyBuilder({
             {name} · Manual ${value}
           </p>
         ))}
+      </section>
+      <section className="saved-strategies" aria-labelledby="saved-strategies-title">
+        <div>
+          <p className="kicker">Optional saving</p>
+          <h2 id="saved-strategies-title">Named strategies</h2>
+          <p className="section-note">
+            Saved in this browser, or synced to your account when signed in.
+          </p>
+        </div>
+        <div className="saved-strategy-controls">
+          <label>
+            Saved strategy name
+            <input
+              aria-label="Saved strategy name"
+              maxLength={80}
+              value={savedName}
+              onChange={(event) => setSavedName(event.target.value)}
+            />
+          </label>
+          <button type="button" onClick={saveNamedStrategy}>
+            Save named strategy
+          </button>
+        </div>
+        {savedStrategies.length ? (
+          <ul className="saved-strategy-list">
+            {savedStrategies.map((record) => (
+              <li key={record.id}>
+                <span>{record.name}</span>
+                <button
+                  type="button"
+                  aria-label={`Load ${record.name}`}
+                  onClick={() => loadNamedStrategy(record)}
+                >
+                  Load
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Remove ${record.name}`}
+                  onClick={() => void removeNamedStrategy(record)}
+                >
+                  Remove
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="section-note">No named strategies saved here yet.</p>
+        )}
+        {saveMessage ? <p role="status">{saveMessage}</p> : null}
+        {saveError ? <p role="alert">{saveError}</p> : null}
       </section>
       <div className="strategy-footer">
         <p>

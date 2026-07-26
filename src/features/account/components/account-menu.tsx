@@ -1,0 +1,171 @@
+"use client";
+
+import type { AuthChangeEvent, Session } from "@supabase/supabase-js";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
+
+import {
+  parsePublicSupabaseConfig,
+  type PublicSupabaseConfig,
+} from "@/integrations/supabase/config";
+
+type AccountClient = {
+  auth: {
+    getSession(): Promise<{ data: { session: Session | null } }>;
+    onAuthStateChange(
+      callback: (event: AuthChangeEvent, session: Session | null) => void,
+    ): { data: { subscription: { unsubscribe(): void } } };
+    signInWithOtp(input: {
+      email: string;
+      options: { emailRedirectTo: string };
+    }): Promise<{ error: unknown | null }>;
+    signOut(): Promise<{ error: unknown | null }>;
+  };
+};
+
+export function AccountMenu({
+  config,
+  createClient,
+}: {
+  config: PublicSupabaseConfig | null;
+  createClient?: (config: PublicSupabaseConfig) => AccountClient;
+}) {
+  const validConfig = useMemo(
+    () => config ? parsePublicSupabaseConfig(config) : null,
+    [config],
+  );
+  const injectedClient = useMemo(() => {
+    if (!validConfig || !createClient) return null;
+    try {
+      return createClient(validConfig);
+    } catch {
+      return null;
+    }
+  }, [validConfig, createClient]);
+  const [loadedClient, setLoadedClient] = useState<AccountClient | null>(null);
+  const client = injectedClient ?? loadedClient;
+  const [open, setOpen] = useState(false);
+  const [email, setEmail] = useState("");
+  const [session, setSession] = useState<Session | null>(null);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [pending, setPending] = useState(false);
+
+  useEffect(() => {
+    if (!validConfig || createClient) return;
+    let active = true;
+    void import("@/integrations/supabase/client")
+      .then(({ createSupabaseBrowserClient }) => {
+        if (active) {
+          setLoadedClient(
+            createSupabaseBrowserClient(validConfig) as AccountClient,
+          );
+        }
+      })
+      .catch(() => {
+        if (active) setLoadedClient(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [validConfig, createClient]);
+
+  useEffect(() => {
+    if (!client) return;
+    let active = true;
+    void client.auth.getSession().then(({ data }) => {
+      if (active) setSession(data.session);
+    }).catch(() => {
+      if (active) setSession(null);
+    });
+    const { data } = client.auth.onAuthStateChange((_event, next) => {
+      setSession(next);
+      window.dispatchEvent(new Event("strategy-auth-change"));
+    });
+    return () => {
+      active = false;
+      data.subscription.unsubscribe();
+    };
+  }, [client]);
+
+  if (!validConfig || !client) return null;
+
+  const signIn = async (event: FormEvent) => {
+    event.preventDefault();
+    setMessage("");
+    setError("");
+    setPending(true);
+    const next = `${window.location.pathname}${window.location.search}`;
+    const callback = new URL("/auth/callback", window.location.origin);
+    callback.searchParams.set("next", next.startsWith("/") ? next : "/");
+    try {
+      const result = await client.auth.signInWithOtp({
+        email: email.trim(),
+        options: { emailRedirectTo: callback.toString() },
+      });
+      if (result.error) throw new Error("Auth provider rejected request");
+      setMessage("Check your email for a sign-in link.");
+    } catch {
+      setError("We could not send a sign-in link. You can keep using guest mode.");
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const signOut = async () => {
+    setError("");
+    try {
+      const result = await client.auth.signOut();
+      if (result.error) throw new Error("Auth provider rejected request");
+    } catch {
+      setError("We could not sign out. Please try again.");
+      return;
+    }
+    setSession(null);
+    setOpen(false);
+    window.dispatchEvent(new Event("strategy-auth-change"));
+  };
+
+  return (
+    <div className="account-menu">
+      <button
+        className="account-trigger"
+        type="button"
+        aria-expanded={open}
+        aria-controls="account-panel"
+        onClick={() => setOpen((value) => !value)}
+      >
+        Account
+      </button>
+      {open ? (
+        <div className="account-panel" id="account-panel">
+          {session ? (
+            <>
+              <p>Signed in as {session.user.email ?? "your account"}</p>
+              <button type="button" onClick={signOut}>Sign out</button>
+            </>
+          ) : (
+            <form onSubmit={signIn}>
+              <p>Optional: sync named strategies across browsers.</p>
+              <label>
+                Email address
+                <input
+                  aria-label="Email address"
+                  type="email"
+                  autoComplete="email"
+                  required
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                />
+              </label>
+              <button type="submit" disabled={pending}>
+                {pending ? "Sending…" : "Email me a sign-in link"}
+              </button>
+            </form>
+          )}
+          {message ? <p role="status">{message}</p> : null}
+          {error ? <p role="alert">{error}</p> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
