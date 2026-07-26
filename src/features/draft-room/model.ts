@@ -276,7 +276,6 @@ export function buildDraftRoomViewModel(input: {
             scoreProjection(projection.stats, input.league.scoring, position))),
     }] as const];
   }));
-  const baselineScored = [...scoredById.values()];
   const unjoinable: DraftPurchase[] = [];
   rebuilt.teams.flatMap((team) => team.playerIds).forEach((playerId) => {
     if (scoredById.has(playerId)) return;
@@ -296,6 +295,7 @@ export function buildDraftRoomViewModel(input: {
     });
   });
   const scored = [...scoredById.values()];
+  const baselineScored = [...scored];
   const draftedIds = new Set(rebuilt.teams.flatMap((team) => team.playerIds));
   const knownIds = new Set(scored.map((player) => player.playerId));
   const validRosterIds = new Set(rebuilt.teams.map((team) => team.rosterId));

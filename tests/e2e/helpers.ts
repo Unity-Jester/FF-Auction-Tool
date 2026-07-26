@@ -5,7 +5,11 @@ export const MOCK_DRAFT_ID = "1234567890";
 export async function setFixture(
   page: Page,
   step = 0,
-  state: "online" | "offline" | "stale-projections" = "online",
+  state:
+    | "online"
+    | "offline"
+    | "stale-projections"
+    | "unknown-scoring" = "online",
 ) {
   const response = await page.request.get(
     `/api/e2e/fixtures?step=${step}&state=${state}`,

@@ -296,6 +296,68 @@
   border-bottom: 1px solid var(--color-line);
 }
 
+.field-error {
+  color: var(--color-danger, #b42318);
+  font-family: var(--font-sans);
+  font-size: 0.72rem;
+  line-height: 1.35;
+  text-transform: none;
+}
+
+.player-picker {
+  position: relative;
+  display: grid;
+  min-width: min(100%, 26rem);
+  gap: var(--space-2);
+}
+
+.player-picker > label {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.73rem;
+  text-transform: uppercase;
+}
+
+.player-picker > input {
+  width: 100%;
+}
+
+.player-picker [role="listbox"] {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + var(--space-1));
+  right: 0;
+  left: 0;
+  max-height: 18rem;
+  margin: 0;
+  padding: var(--space-1);
+  overflow-y: auto;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  box-shadow: 0 0.75rem 2rem rgb(0 0 0 / 14%);
+  list-style: none;
+}
+
+.player-picker [role="option"],
+.player-picker .empty {
+  padding: var(--space-2);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: 0.86rem;
+  line-height: 1.35;
+}
+
+.player-picker [role="option"].active,
+.player-picker [role="option"]:hover {
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
+.player-picker .empty {
+  color: var(--color-text-muted);
+  cursor: default;
+}
+
 .projection-import {
   display: grid;
   gap: var(--space-4);

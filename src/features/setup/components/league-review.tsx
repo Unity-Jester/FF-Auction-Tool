@@ -60,6 +60,33 @@ function formValues(league: LeagueConfig): FormValues {
   };
 }
 
+function sourceValue(values: FormValues, key: string): string | boolean | undefined {
+  if (key === "teams" || key === "budget" || key === "minBid" || key === "bench") {
+    return values[key];
+  }
+  if (key === "cap") return values.cap;
+  if (key.startsWith("starters.")) {
+    return values.starters[key.slice("starters.".length) as Position];
+  }
+  const flexMatch = /^flex\.(\d+)\.(count|eligible)$/.exec(key);
+  if (flexMatch) {
+    return values.flex[Number(flexMatch[1])]?.[
+      flexMatch[2] as "count" | "eligible"
+    ];
+  }
+  if (key.startsWith("scoring.bonus.")) {
+    return values.positionReceptionBonus[
+      key.slice("scoring.bonus.".length) as "RB" | "WR" | "TE"
+    ];
+  }
+  if (key.startsWith("scoring.")) {
+    return values.scoring[
+      key.slice("scoring.".length) as keyof FormValues["scoring"]
+    ];
+  }
+  return undefined;
+}
+
 function statusLabel(status?: DraftSnapshot["status"]): string {
   if (status === "drafting") return "Live draft";
   if (status === "complete") return "Draft complete";
@@ -82,6 +109,7 @@ export function LeagueReview({
 }) {
   const router = useRouter();
   const [values, setValues] = useState(() => formValues(league));
+  const [importedValues] = useState(() => formValues(importedLeague));
   const [edited, setEdited] = useState<Set<string>>(() => new Set());
   const [confirmedUnknownScoring, setConfirmedUnknownScoring] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -94,6 +122,10 @@ export function LeagueReview({
     setEdited((current) => new Set(current).add(key));
   const sourceFor = (key: string, scoringKey?: string) => {
     if (edited.has(key)) return "Local edit";
+    if (sourceValue(values, key) !== sourceValue(importedValues, key)) {
+      return "Local edit";
+    }
+    if (key === "cap") return "Default";
     if (!scoringKey || !scoringWarning) return "Sleeper import";
     if (
       scoringWarning.code === "SCORING_INFERRED" &&

@@ -138,14 +138,21 @@ function canonicalPlayerContext(
           ? eligible[0]
           : [...eligible].sort((left, right) => {
               const blended = (candidate: Position) => {
-                const starter = Math.max(
-                  0,
-                  points - input.replacementLevels.starterPoints[candidate],
-                );
-                const bench = Math.max(
-                  0,
-                  points - input.replacementLevels.benchPoints[candidate],
-                );
+                const starter =
+                  input.replacementLevels.starterRanks[candidate] > 0
+                    ? Math.max(
+                        0,
+                        points -
+                          input.replacementLevels.starterPoints[candidate],
+                      )
+                    : 0;
+                const bench =
+                  input.replacementLevels.benchRanks[candidate] > 0
+                    ? Math.max(
+                        0,
+                        points - input.replacementLevels.benchPoints[candidate],
+                      )
+                    : 0;
                 const maximum = Math.max(starter, bench);
                 return maximum === 0
                   ? 0
@@ -155,6 +162,14 @@ function canonicalPlayerContext(
                           (1 - input.strategy.starterBudgetShare));
               };
               return (
+                Number(
+                  input.replacementLevels.starterRanks[right] > 0 ||
+                    input.replacementLevels.benchRanks[right] > 0,
+                ) -
+                  Number(
+                    input.replacementLevels.starterRanks[left] > 0 ||
+                      input.replacementLevels.benchRanks[left] > 0,
+                  ) ||
                 blended(right) - blended(left) ||
                 POSITIONS.indexOf(left) - POSITIONS.indexOf(right)
               );
@@ -213,7 +228,71 @@ function buildPositionState(
   selectedPositions: ReadonlyMap<string, Position>,
   eligiblePositions: ReadonlyMap<string, ReadonlyArray<Position>>,
 ): PositionState & { rosterNeeds: ValuationMetadata["rosterNeeds"] } {
-  const assignRoster = (playerIds: ReadonlyArray<string>) => {
+  const rosteredPlayerIds = new Set(
+    input.teams.flatMap((team) => team.playerIds),
+  );
+  const availableSupply = positionRecord();
+  eligiblePositions.forEach((eligible, playerId) => {
+    if (rosteredPlayerIds.has(playerId)) {
+      return;
+    }
+    eligible.forEach((position) => {
+      availableSupply[position] += 1;
+    });
+  });
+  const planningSpendForRoster = (rosterId: number) => {
+    const spend = positionRecord();
+    input.purchases.forEach((purchase) => {
+      if (purchase.rosterId !== rosterId) {
+        return;
+      }
+      const position = selectedPositions.get(purchase.playerId);
+      if (position !== undefined) {
+        spend[position] += purchase.amount;
+      }
+    });
+    return spend;
+  };
+  const chooseNeedPosition = (
+    rawCandidates: ReadonlyArray<Position>,
+    counts: Readonly<Record<Position, number>>,
+    needs: Readonly<Record<Position, number>>,
+    planningSpend: Readonly<Record<Position, number>>,
+    rankType: "starter" | "bench",
+  ): Position => {
+    const rankRecord =
+      rankType === "starter"
+        ? input.replacementLevels.starterRanks
+        : input.replacementLevels.benchRanks;
+    const capacityCandidates = rawCandidates.filter(
+      (position) => rankRecord[position] > 0,
+    );
+    const candidates =
+      capacityCandidates.length > 0 ? capacityCandidates : [...rawCandidates];
+
+    return [...candidates].sort((left, right) => {
+      const budgetPriority = (position: Position) =>
+        Math.max(
+          0,
+          input.strategy.positionBudgets[position] - planningSpend[position],
+        ) /
+        (counts[position] + needs[position] + 1);
+      const scarcity = (position: Position) =>
+        rankRecord[position] / Math.max(1, availableSupply[position]);
+      return (
+        budgetPriority(right) - budgetPriority(left) ||
+        counts[left] +
+          needs[left] -
+          (counts[right] + needs[right]) ||
+        scarcity(right) - scarcity(left) ||
+        POSITIONS.indexOf(left) - POSITIONS.indexOf(right)
+      );
+    })[0];
+  };
+  const assignRoster = (
+    playerIds: ReadonlyArray<string>,
+    planningSpend: Readonly<Record<Position, number>>,
+  ) => {
     const counts = positionRecord();
     const assignments = new Map<string, Position>();
     const slots = [
@@ -308,6 +387,7 @@ function buildPositionState(
     openSlots.forEach((slot) => {
       if (slot.fixed !== undefined) {
         fixedNeeds[slot.fixed] += 1;
+        needs[slot.fixed] += 1;
       } else {
         const eligible = [...slot.eligible];
         const key = eligible.join("|");
@@ -316,15 +396,25 @@ function buildPositionState(
           count: (current?.count ?? 0) + 1,
           eligible,
         });
+        const allocated = chooseNeedPosition(
+          eligible,
+          counts,
+          needs,
+          planningSpend,
+          "starter",
+        );
+        needs[allocated] += 1;
       }
-      slot.eligible.forEach((position) => {
-        needs[position] += 1;
-      });
     });
-    if (remainingBench > 0) {
-      POSITIONS.forEach((position) => {
-        needs[position] += remainingBench;
-      });
+    for (let index = 0; index < remainingBench; index += 1) {
+      const allocated = chooseNeedPosition(
+        POSITIONS,
+        counts,
+        needs,
+        planningSpend,
+        "bench",
+      );
+      needs[allocated] += 1;
     }
     return {
       assignments,
@@ -341,7 +431,10 @@ function buildPositionState(
   const myTeam = input.teams.find(
     (team) => team.rosterId === input.myRosterId,
   )!;
-  const myPositions = assignRoster(myTeam.playerIds);
+  const myPositions = assignRoster(
+    myTeam.playerIds,
+    planningSpendForRoster(input.myRosterId),
+  );
   const draftedCounts = myPositions.counts;
   const spend = positionRecord();
   input.purchases.forEach((purchase) => {
@@ -361,7 +454,10 @@ function buildPositionState(
 
   const leagueNeed = positionRecord();
   input.teams.forEach((team) => {
-    const needs = assignRoster(team.playerIds).needs;
+    const needs = assignRoster(
+      team.playerIds,
+      planningSpendForRoster(team.rosterId),
+    ).needs;
     POSITIONS.forEach((position) => {
       leagueNeed[position] += needs[position];
     });

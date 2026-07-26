@@ -39,6 +39,16 @@ const selectablePlayers = [
   },
 ];
 
+async function choosePlayer(
+  user: ReturnType<typeof userEvent.setup>,
+  query: string,
+  picker: HTMLElement = screen.getByRole("combobox", { name: "Player" }),
+) {
+  await user.clear(picker);
+  await user.type(picker, query);
+  await user.keyboard("{ArrowDown}{Enter}");
+}
+
 describe("StrategyBuilder", () => {
   afterEach(() => {
     window.localStorage.clear();
@@ -89,7 +99,7 @@ describe("StrategyBuilder", () => {
         players={selectablePlayers}
       />,
     );
-    await user.selectOptions(screen.getByLabelText("Player"), "9509");
+    await choosePlayer(user, "Bijan");
     await user.click(screen.getByRole("button", { name: "Target player" }));
     expect(screen.getByText(/Bijan Robinson.*ATL.*RB.*Target/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Avoid player" }));
@@ -98,7 +108,8 @@ describe("StrategyBuilder", () => {
     expect(screen.queryByText(/Bijan Robinson.*Avoid/)).not.toBeInTheDocument();
   });
 
-  it("disambiguates duplicate names by player ID, team, and position", () => {
+  it("disambiguates duplicate names by player ID, team, and position", async () => {
+    const user = userEvent.setup();
     render(
       <StrategyBuilder
         draftId="123456789012345678"
@@ -106,8 +117,44 @@ describe("StrategyBuilder", () => {
         players={selectablePlayers}
       />,
     );
+    await user.clear(screen.getByRole("combobox", { name: "Player" }));
+    await user.type(
+      screen.getByRole("combobox", { name: "Player" }),
+      "Alex Smith",
+    );
     expect(screen.getByRole("option", { name: "Alex Smith · ATL · WR · dup-1" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "Alex Smith · BUF · QB · dup-2" })).toBeInTheDocument();
+  });
+
+  it("searches a bounded identity-backed player list with the keyboard", async () => {
+    const user = userEvent.setup();
+    const manyPlayers = Array.from({ length: 3_000 }, (_, index) => ({
+      playerId: `player-${index}`,
+      name: index === 2_999 ? "Needle Player" : `Player ${index}`,
+      team: index === 2_999 ? "DET" : "FA",
+      positions: ["WR" as const],
+    }));
+    render(
+      <StrategyBuilder
+        draftId="123456789012345678"
+        league={league}
+        players={manyPlayers}
+      />,
+    );
+
+    const picker = screen.getByRole("combobox", { name: "Player" });
+    expect(picker).toHaveAttribute("aria-autocomplete", "list");
+    await user.clear(picker);
+    await user.type(picker, "Needle");
+    expect(
+      screen.getByRole("listbox").querySelectorAll('[role="option"]'),
+    ).toHaveLength(1);
+    await user.keyboard("{ArrowDown}{Enter}");
+    await user.click(screen.getByRole("button", { name: "Target player" }));
+
+    expect(
+      screen.getByText(/Needle Player.*DET.*WR.*Target/),
+    ).toBeInTheDocument();
   });
 
   it("stores a manual dollar value by player identity", async () => {
@@ -119,11 +166,44 @@ describe("StrategyBuilder", () => {
         players={selectablePlayers}
       />,
     );
-    await user.selectOptions(screen.getByLabelText("Player"), "9509");
+    await choosePlayer(user, "Bijan");
     await user.clear(screen.getByLabelText("Manual value"));
     await user.type(screen.getByLabelText("Manual value"), "61");
     await user.click(screen.getByRole("button", { name: "Set manual value" }));
     expect(screen.getByText(/Bijan Robinson.*Manual dollar value.*\$61/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Clear manual value" }));
+    expect(
+      screen.queryByText(/Bijan Robinson.*Manual dollar value/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows field-specific whole-dollar errors and blocks entry", async () => {
+    const user = userEvent.setup();
+    render(<StrategyBuilder draftId="123456789012345678" league={league} />);
+
+    const qb = screen.getByLabelText("QB budget");
+    const reserve = screen.getByLabelText("Minimum reserve");
+    expect(qb).toHaveAttribute("step", "1");
+    expect(reserve).toHaveAttribute("step", "1");
+
+    await user.clear(qb);
+    await user.type(qb, "20.5");
+    expect(screen.getByText("QB budget must be a whole dollar amount.")).toBeInTheDocument();
+    expect(qb).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByRole("button", { name: "Enter draft room" })).toBeDisabled();
+
+    await user.clear(reserve);
+    await user.type(reserve, "15.5");
+    expect(
+      screen.getByText("Minimum reserve must be a whole dollar amount."),
+    ).toBeInTheDocument();
+    expect(reserve).toHaveAttribute("aria-invalid", "true");
+
+    await user.clear(reserve);
+    await user.type(reserve, "1");
+    expect(
+      screen.getByText("Minimum reserve must cover $15 in minimum bids."),
+    ).toBeInTheDocument();
   });
 
   it("persists and clears supported individual projection statistics without losing CSV overrides", async () => {
@@ -154,7 +234,7 @@ describe("StrategyBuilder", () => {
         players={selectablePlayers}
       />,
     );
-    await user.selectOptions(screen.getByLabelText("Player"), "9509");
+    await choosePlayer(user, "Bijan");
     await user.selectOptions(screen.getByLabelText("Projection statistic"), "rushYards");
     await user.type(screen.getByLabelText("Projection stat value"), "1450");
     await user.click(screen.getByRole("button", { name: "Set projection stat" }));
@@ -179,7 +259,11 @@ describe("StrategyBuilder", () => {
         players={selectablePlayers}
       />,
     );
-    await user.selectOptions(screen.getAllByLabelText("Player")[1], "9509");
+    await choosePlayer(
+      user,
+      "Bijan",
+      screen.getAllByRole("combobox", { name: "Player" })[1],
+    );
     await user.click(
       screen.getAllByRole("button", { name: "Clear individual projection" })[1],
     );
@@ -187,6 +271,52 @@ describe("StrategyBuilder", () => {
       screen.getAllByRole("button", { name: "Enter draft room" })[1],
     );
     expect(loadSession(draftId)?.csvProjectionOverrides).toEqual([csv]);
+  });
+
+  it("shows the active individual-over-CSV projection for the same player", () => {
+    const draftId = "same-player-projection-layers";
+    saveSession({
+      version: 1,
+      draftId,
+      strategy: defaultStrategy(league),
+      preferences: {},
+      localCorrections: [],
+      csvProjectionOverrides: [
+        {
+          playerId: "9509",
+          name: "Bijan Robinson",
+          team: "ATL",
+          positions: ["RB"],
+          stats: { rushYards: 1_450 },
+          source: "Individual projection override",
+          updatedAt: "2026-07-26T12:01:00.000Z",
+        },
+        {
+          playerId: "9509",
+          name: "Bijan Robinson",
+          team: "ATL",
+          positions: ["RB"],
+          stats: { rushYards: 900, receptions: 70 },
+          source: "CSV override",
+          updatedAt: "2026-07-26T12:02:00.000Z",
+        },
+      ],
+      savedAt: "2026-07-26T12:02:00.000Z",
+    });
+
+    render(
+      <StrategyBuilder
+        draftId={draftId}
+        league={league}
+        players={selectablePlayers}
+      />,
+    );
+
+    expect(
+      screen.getByText(
+        /Individual projection.*Rush yards 1,450.*Receptions 70/,
+      ),
+    ).toBeInTheDocument();
   });
 
   it("prevents entry while position budgets do not equal available spend", async () => {
@@ -299,7 +429,7 @@ describe("StrategyBuilder", () => {
         players={selectablePlayers}
       />,
     );
-    await user.selectOptions(screen.getByLabelText("Player"), "9509");
+    await choosePlayer(user, "Bijan");
     await user.click(screen.getByRole("button", { name: "Target player" }));
     await user.click(screen.getByRole("button", { name: "Enter draft room" }));
 

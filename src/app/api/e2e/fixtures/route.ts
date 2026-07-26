@@ -7,7 +7,12 @@ import {
   fixtureModeEnabled,
 } from "@/testing/e2e-fixtures";
 
-const allowedStates = new Set(["online", "offline", "stale-projections"]);
+const allowedStates = new Set([
+  "online",
+  "offline",
+  "stale-projections",
+  "unknown-scoring",
+]);
 
 export function createFixtureControlHandler() {
   return async function GET(request: Request): Promise<NextResponse> {

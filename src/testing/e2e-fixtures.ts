@@ -53,10 +53,12 @@ export function fixtureStepFromRequest(
 export function fixtureStateFromRequest(
   request: Request,
   environment: FixtureEnvironment = process.env,
-): "online" | "offline" | "stale-projections" | null {
+): "online" | "offline" | "stale-projections" | "unknown-scoring" | null {
   if (!fixtureModeEnabled(environment)) return null;
   const state = cookieValue(request, E2E_STATE_COOKIE);
-  return state === "offline" || state === "stale-projections"
+  return state === "offline" ||
+    state === "stale-projections" ||
+    state === "unknown-scoring"
     ? state
     : "online";
 }
@@ -78,10 +80,19 @@ export function fixtureDraftResponse(request: Request, draftId: string) {
     ...pick,
     draft_id: draftId,
   }));
+  const state = fixtureStateFromRequest(request);
+  const draft = draftForId(draftId);
   return normalizeDraft({
-    draft: draftForId(draftId),
+    draft: {
+      ...draft,
+      status: step === E2E_MAX_STEP ? "complete" : "drafting",
+      metadata:
+        state === "unknown-scoring"
+          ? { ...draft.metadata, scoring_type: "unknown_fixture_scoring" }
+          : draft.metadata,
+    },
     picks,
-    now: new Date(`2026-07-25T18:00:0${step}.000Z`),
+    now: new Date(Date.UTC(2026, 6, 25, 18, 0, step)),
   });
 }
 

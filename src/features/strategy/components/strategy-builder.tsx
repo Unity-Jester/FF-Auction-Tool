@@ -14,6 +14,10 @@ import {
   CSV_MATCH_LIMIT_ERROR,
   MAX_CSV_FILE_BYTES,
 } from "@/integrations/projections/csv-limits";
+import {
+  INDIVIDUAL_PROJECTION_SOURCE,
+  mergeProjectionLayers,
+} from "@/integrations/projections/merge-layers";
 import type {
   CsvProjectionResult,
   ProjectionPlayer,
@@ -48,7 +52,11 @@ const projectionStats = [
   ["Receiving touchdowns", "receivingTds"],
   ["Fumbles lost", "fumblesLost"],
 ] as const satisfies ReadonlyArray<[string, keyof ProjectionStats]>;
-const individualProjectionSource = "Individual projection override";
+const MAX_PLAYER_RESULTS = 50;
+
+function playerIdentityLabel(player: ProjectionPlayer): string {
+  return `${player.name} · ${player.team ?? "FA"} · ${player.positions.join("/")} · ${player.playerId}`;
+}
 
 export function StrategyBuilder({
   draftId,
@@ -67,6 +75,11 @@ export function StrategyBuilder({
     () => savedSession?.strategy ?? defaultStrategy(league),
   );
   const [playerId, setPlayerId] = useState(() => players[0]?.playerId ?? "");
+  const [playerQuery, setPlayerQuery] = useState(() =>
+    players[0] ? playerIdentityLabel(players[0]) : "",
+  );
+  const [playerPickerOpen, setPlayerPickerOpen] = useState(false);
+  const [activePlayerIndex, setActivePlayerIndex] = useState(0);
   const [manualValue, setManualInput] = useState("");
   const [projectionStat, setProjectionStat] =
     useState<keyof ProjectionStats>("rushYards");
@@ -167,9 +180,25 @@ export function StrategyBuilder({
       ),
     [strategy],
   );
+  const invalidBudgetPositions = positions.filter((position) => {
+    const value = strategy.positionBudgets[position];
+    return !Number.isSafeInteger(value) || value < 0;
+  });
+  const reserveIsWholeDollars =
+    Number.isSafeInteger(strategy.minReserve) && strategy.minReserve >= 0;
+  const minimumRequiredReserve = league.rosterSize * league.minBid;
+  const reserveError = !reserveIsWholeDollars
+    ? "Minimum reserve must be a whole dollar amount."
+    : strategy.minReserve < minimumRequiredReserve
+      ? `Minimum reserve must cover $${minimumRequiredReserve} in minimum bids.`
+      : strategy.minReserve > league.budget
+        ? `Minimum reserve cannot exceed $${league.budget}.`
+        : null;
   const valid =
+    invalidBudgetPositions.length === 0 &&
+    reserveError === null &&
     total === league.budget &&
-    strategy.minReserve >= league.rosterSize * league.minBid &&
+    strategy.minReserve >= minimumRequiredReserve &&
     strategy.minReserve <= league.budget;
   const starterBudget = Math.round(league.budget * strategy.starterBudgetShare);
   const benchBudget = league.budget - starterBudget;
@@ -179,9 +208,35 @@ export function StrategyBuilder({
       archetype: "custom",
       positionBudgets: {
         ...current.positionBudgets,
-        [position]: Math.max(0, Number(value) || 0),
+        [position]: Number(value),
       },
     }));
+  const sortedPlayers = useMemo(
+    () =>
+      [...players].sort(
+        (left, right) =>
+          left.name.localeCompare(right.name) ||
+          left.playerId.localeCompare(right.playerId),
+      ),
+    [players],
+  );
+  const filteredPlayers = useMemo(() => {
+    const query = playerQuery.trim().toLocaleLowerCase();
+    return sortedPlayers
+      .filter((player) =>
+        query.length === 0
+          ? true
+          : playerIdentityLabel(player).toLocaleLowerCase().includes(query),
+      )
+      .slice(0, MAX_PLAYER_RESULTS);
+  }, [playerQuery, sortedPlayers]);
+  const selectPlayer = (player: ProjectionPlayer) => {
+    setPlayerId(player.playerId);
+    setPlayerQuery(playerIdentityLabel(player));
+    setPlayerPickerOpen(false);
+    setActivePlayerIndex(0);
+    setProjectionError("");
+  };
   const preference = (value: PlayerPreference) => {
     if (!playerId) return;
     setStrategy((current) => ({
@@ -204,6 +259,18 @@ export function StrategyBuilder({
       valueOverrides: { ...current.valueOverrides, [playerId]: value },
     }));
   };
+  const clearManualValue = () => {
+    if (!playerId) return;
+    setStrategy((current) => ({
+      ...current,
+      valueOverrides: Object.fromEntries(
+        Object.entries(current.valueOverrides).filter(
+          ([id]) => id !== playerId,
+        ),
+      ),
+    }));
+    setManualInput("");
+  };
   const applyProjectionStat = () => {
     const player = players.find((candidate) => candidate.playerId === playerId);
     const value = Number(projectionStatValue);
@@ -222,9 +289,12 @@ export function StrategyBuilder({
     const existing = csvProjectionOverrides.find(
       (projection) =>
         projection.playerId === playerId &&
-        projection.source === individualProjectionSource,
+        projection.source === INDIVIDUAL_PROJECTION_SOURCE,
     );
-    const baseline = projections.find(
+    const baseline = mergeProjectionLayers(
+      projections,
+      csvProjectionOverrides,
+    ).find(
       (projection) => projection.playerId === playerId,
     );
     const next: PlayerProjection = {
@@ -237,7 +307,7 @@ export function StrategyBuilder({
         ...(existing?.stats ?? {}),
         [projectionStat]: value,
       },
-      source: individualProjectionSource,
+      source: INDIVIDUAL_PROJECTION_SOURCE,
       updatedAt: new Date().toISOString(),
     };
     setCsvProjectionOverrides((current) => [
@@ -245,7 +315,7 @@ export function StrategyBuilder({
         (projection) =>
           !(
             projection.playerId === playerId &&
-            projection.source === individualProjectionSource
+            projection.source === INDIVIDUAL_PROJECTION_SOURCE
           ),
       ),
       next,
@@ -260,7 +330,7 @@ export function StrategyBuilder({
         (projection) =>
           !(
             projection.playerId === playerId &&
-            projection.source === individualProjectionSource
+            projection.source === INDIVIDUAL_PROJECTION_SOURCE
           ),
       ),
     );
@@ -268,6 +338,11 @@ export function StrategyBuilder({
   };
   const selectedPlayer = players.find(
     (candidate) => candidate.playerId === playerId,
+  );
+  const activeProjectionByPlayerId = new Map(
+    mergeProjectionLayers(projections, csvProjectionOverrides).map(
+      (projection) => [projection.playerId, projection],
+    ),
   );
   const playerLabel = (id: string) => {
     const player = players.find((candidate) => candidate.playerId === id);
@@ -378,7 +453,8 @@ export function StrategyBuilder({
     if (file.size > MAX_CSV_FILE_BYTES) {
       setCsvProjectionOverrides((current) =>
         current.filter(
-          (projection) => projection.source === individualProjectionSource,
+          (projection) =>
+            projection.source === INDIVIDUAL_PROJECTION_SOURCE,
         ),
       );
       setCsvError(
@@ -406,7 +482,8 @@ export function StrategyBuilder({
       );
       setCsvProjectionOverrides((current) => [
         ...current.filter(
-          (projection) => projection.source === individualProjectionSource,
+          (projection) =>
+            projection.source === INDIVIDUAL_PROJECTION_SOURCE,
         ),
         ...(overMatchLimit ? [] : result.matched),
       ]);
@@ -414,7 +491,8 @@ export function StrategyBuilder({
     } catch {
       setCsvProjectionOverrides((current) =>
         current.filter(
-          (projection) => projection.source === individualProjectionSource,
+          (projection) =>
+            projection.source === INDIVIDUAL_PROJECTION_SOURCE,
         ),
       );
       setCsvError(
@@ -461,14 +539,29 @@ export function StrategyBuilder({
                 {position}
                 <input
                   aria-label={`${position} budget`}
+                  aria-invalid={invalidBudgetPositions.includes(position)}
+                  aria-describedby={
+                    invalidBudgetPositions.includes(position)
+                      ? `${position.toLowerCase()}-budget-error`
+                      : undefined
+                  }
                   inputMode="numeric"
                   type="number"
                   min="0"
+                  step="1"
                   value={strategy.positionBudgets[position]}
                   onChange={(event) =>
                     changeBudget(position, event.target.value)
                   }
                 />
+                {invalidBudgetPositions.includes(position) ? (
+                  <span
+                    className="field-error"
+                    id={`${position.toLowerCase()}-budget-error`}
+                  >
+                    {position} budget must be a whole dollar amount.
+                  </span>
+                ) : null}
               </label>
             ))}
           </div>
@@ -535,16 +628,26 @@ export function StrategyBuilder({
             Minimum reserve
             <input
               aria-label="Minimum reserve"
+              aria-invalid={reserveError !== null}
+              aria-describedby={
+                reserveError === null ? undefined : "minimum-reserve-error"
+              }
               type="number"
-              min={league.rosterSize * league.minBid}
+              min={minimumRequiredReserve}
+              step="1"
               value={strategy.minReserve}
               onChange={(event) =>
                 setStrategy((current) => ({
                   ...current,
-                  minReserve: Math.max(0, Number(event.target.value) || 0),
+                  minReserve: Number(event.target.value),
                 }))
               }
             />
+            {reserveError ? (
+              <span className="field-error" id="minimum-reserve-error">
+                {reserveError}
+              </span>
+            ) : null}
           </label>
           <div className="budget-list">
             {strategy.spendingCurve.map((weight, index) => (
@@ -663,33 +766,88 @@ export function StrategyBuilder({
           value only; individual projections change supported projected stats.
         </p>
         <div className="input-row">
-          <label>
-            Player
-            <select
+          <div
+            className="player-picker"
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget)) {
+                setPlayerPickerOpen(false);
+              }
+            }}
+          >
+            <label htmlFor="player-picker-input">Player</label>
+            <input
+              id="player-picker-input"
+              role="combobox"
               aria-label="Player"
-              value={playerId}
+              aria-autocomplete="list"
+              aria-controls="player-picker-results"
+              aria-expanded={playerPickerOpen}
+              aria-activedescendant={
+                playerPickerOpen && filteredPlayers[activePlayerIndex]
+                  ? `player-option-${filteredPlayers[activePlayerIndex].playerId}`
+                  : undefined
+              }
+              autoComplete="off"
+              placeholder={
+                players.length === 0
+                  ? "Player identities unavailable"
+                  : "Search name, team, position, or ID"
+              }
+              value={playerQuery}
+              onFocus={() => {
+                setPlayerPickerOpen(true);
+                setActivePlayerIndex(0);
+              }}
               onChange={(event) => {
-                setPlayerId(event.target.value);
+                setPlayerQuery(event.target.value);
+                setPlayerId("");
+                setPlayerPickerOpen(true);
+                setActivePlayerIndex(0);
                 setProjectionError("");
               }}
-            >
-              {players.length === 0 && (
-                <option value="">Player identities unavailable</option>
-              )}
-              {[...players]
-                .sort(
-                  (left, right) =>
-                    left.name.localeCompare(right.name) ||
-                    left.playerId.localeCompare(right.playerId),
-                )
-                .map((player) => (
-                  <option key={player.playerId} value={player.playerId}>
-                    {player.name} · {player.team ?? "FA"} ·{" "}
-                    {player.positions.join("/")} · {player.playerId}
-                  </option>
+              onKeyDown={(event) => {
+                if (event.key === "ArrowDown") {
+                  event.preventDefault();
+                  setPlayerPickerOpen(true);
+                  setActivePlayerIndex((current) =>
+                    Math.min(
+                      filteredPlayers.length - 1,
+                      Math.max(0, current + 1),
+                    ),
+                  );
+                } else if (event.key === "ArrowUp") {
+                  event.preventDefault();
+                  setActivePlayerIndex((current) => Math.max(0, current - 1));
+                } else if (event.key === "Enter") {
+                  event.preventDefault();
+                  const player = filteredPlayers[activePlayerIndex];
+                  if (player) selectPlayer(player);
+                } else if (event.key === "Escape") {
+                  setPlayerPickerOpen(false);
+                }
+              }}
+            />
+            {playerPickerOpen ? (
+              <ul id="player-picker-results" role="listbox">
+                {filteredPlayers.map((player, index) => (
+                  <li
+                    id={`player-option-${player.playerId}`}
+                    key={player.playerId}
+                    role="option"
+                    aria-selected={player.playerId === playerId}
+                    className={index === activePlayerIndex ? "active" : ""}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => selectPlayer(player)}
+                  >
+                    {playerIdentityLabel(player)}
+                  </li>
                 ))}
-            </select>
-          </label>
+                {filteredPlayers.length === 0 ? (
+                  <li className="empty">No matching players</li>
+                ) : null}
+              </ul>
+            ) : null}
+          </div>
           <input
             aria-label="Manual value"
             inputMode="numeric"
@@ -713,6 +871,16 @@ export function StrategyBuilder({
           </button>
           <button type="button" onClick={applyManualValue}>
             Set manual value
+          </button>
+          <button
+            type="button"
+            disabled={
+              !playerId ||
+              strategy.valueOverrides[playerId] === undefined
+            }
+            onClick={clearManualValue}
+          >
+            Clear manual value
           </button>
         </div>
         <div className="input-row">
@@ -753,7 +921,7 @@ export function StrategyBuilder({
             disabled={!csvProjectionOverrides.some(
               (projection) =>
                 projection.playerId === playerId &&
-                projection.source === individualProjectionSource,
+                projection.source === INDIVIDUAL_PROJECTION_SOURCE,
             )}
             onClick={clearIndividualProjection}
           >
@@ -774,13 +942,16 @@ export function StrategyBuilder({
         {csvProjectionOverrides
           .filter(
             (projection) =>
-              projection.source === individualProjectionSource &&
+              projection.source === INDIVIDUAL_PROJECTION_SOURCE &&
               (!selectedPlayer || projection.playerId === selectedPlayer.playerId),
           )
           .map((projection) => (
             <p key={`${projection.playerId}-projection`}>
               {playerLabel(projection.playerId)} · Individual projection ·{" "}
-              {Object.entries(projection.stats)
+              {Object.entries(
+                activeProjectionByPlayerId.get(projection.playerId)?.stats ??
+                  projection.stats,
+              )
                 .map(([key, value]) => {
                   const label =
                     projectionStats.find(([, field]) => field === key)?.[0] ??
@@ -836,13 +1007,14 @@ export function StrategyBuilder({
             ) : null}
           </div>
         ) : csvProjectionOverrides.filter(
-            (projection) => projection.source !== individualProjectionSource,
+            (projection) =>
+              projection.source !== INDIVIDUAL_PROJECTION_SOURCE,
           ).length ? (
           <p role="status">
             {
               csvProjectionOverrides.filter(
                 (projection) =>
-                  projection.source !== individualProjectionSource,
+                  projection.source !== INDIVIDUAL_PROJECTION_SOURCE,
               ).length
             }{" "}
             saved CSV overrides will be used.

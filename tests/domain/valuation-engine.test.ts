@@ -11,9 +11,10 @@ import {
   type PlayerValuation,
   type RunValuationEngineInput,
 } from "@/domain/valuation/engine";
-import type {
-  ReplacementLevels,
-  ScoredPlayer,
+import {
+  calculateReplacementLevels,
+  type ReplacementLevels,
+  type ScoredPlayer,
 } from "@/domain/valuation/replacement-levels";
 
 const positions: Position[] = ["QB", "RB", "WR", "TE", "K", "DEF"];
@@ -70,9 +71,12 @@ function levels(): ReplacementLevels {
   const zeroes = Object.fromEntries(
     positions.map((position) => [position, 0]),
   ) as Record<Position, number>;
+  const availableRanks = Object.fromEntries(
+    positions.map((position) => [position, 100]),
+  ) as Record<Position, number>;
   return {
-    starterRanks: { ...zeroes },
-    benchRanks: { ...zeroes },
+    starterRanks: { ...availableRanks },
+    benchRanks: { ...availableRanks },
     starterPoints: { ...zeroes },
     benchPoints: { ...zeroes },
     replacementPlayerIds: {},
@@ -341,7 +345,7 @@ describe("runValuationEngine", () => {
     ).toBe(false);
   });
 
-  it("includes an open flex slot in eligible roster need and position budget pace", () => {
+  it("allocates an open flex slot once and uses that position for need and budget pace", () => {
     const original = input();
     const myTeam = {
       ...original.teams[0],
@@ -369,13 +373,17 @@ describe("runValuationEngine", () => {
     const result = detailed.values;
 
     expect(detailed.metadata.needs.mine).toMatchObject({
-      RB: 1,
+      RB: 0,
       WR: 1,
-      TE: 1,
+      TE: 0,
     });
     expect(
-      result.get("rb-1")!.adjustments.map((adjustment) => adjustment.code),
+      result.get("wr-2")!.adjustments.map((adjustment) => adjustment.code),
     ).toEqual(expect.arrayContaining(["ROSTER_NEED", "POSITION_BUDGET"]));
+    expect(detailed.metadata.bestFitPositionsByPlayerId["rb-1"]).toEqual([]);
+    expect(detailed.metadata.bestFitPositionsByPlayerId["wr-2"]).toEqual([
+      "WR",
+    ]);
     expect(detailed.metadata.rosterNeeds).toEqual({
       fixed: { QB: 0, RB: 0, WR: 0, TE: 0, K: 0, DEF: 0 },
       flex: [{ count: 1, eligible: ["RB", "WR", "TE"] }],
@@ -395,6 +403,177 @@ describe("runValuationEngine", () => {
     expect(
       detailed.metadata.remainingSupplyAtOrAboveTierByPlayerId["rb-1"],
     ).toBeGreaterThan(0);
+  });
+
+  it("allocates each fixed and bench opening exactly once", () => {
+    const original = input();
+    const league = createLeagueConfig({
+      teams: 1,
+      budget: 120,
+      minBid: 1,
+      starters: { QB: 0, RB: 1, WR: 0, TE: 0, K: 0, DEF: 0 },
+      bench: 1,
+      flex: [],
+      receptionPoints: 0.5,
+      capKickerDefenseAtOne: false,
+    });
+    const build = (players: ScoredPlayer[]) =>
+      runValuationEngineWithMetadata({
+        ...original,
+        league,
+        players,
+        teams: [
+          {
+            rosterId: 1,
+            name: "Me",
+            remainingBudget: 120,
+            openSlots: 2,
+            playerIds: [],
+          },
+        ],
+        myRosterId: 1,
+        purchases: [],
+      });
+
+    const forward = build(original.players);
+    const reversed = build([...original.players].reverse());
+
+    expect(
+      Object.values(forward.metadata.needs.mine).reduce(
+        (sum, count) => sum + count,
+        0,
+      ),
+    ).toBe(2);
+    expect(
+      Object.values(forward.metadata.needs.league).reduce(
+        (sum, count) => sum + count,
+        0,
+      ),
+    ).toBe(2);
+    expect(forward.metadata.needs).toEqual(reversed.metadata.needs);
+    expect(forward.metadata.rosterNeeds).toEqual({
+      fixed: { QB: 0, RB: 1, WR: 0, TE: 0, K: 0, DEF: 0 },
+      flex: [],
+      bench: 1,
+    });
+  });
+
+  it("allocates flexible demand toward the strategy budget without duplicating the opening", () => {
+    const original = input();
+    const league = createLeagueConfig({
+      teams: 1,
+      budget: 120,
+      minBid: 1,
+      starters: { QB: 0, RB: 0, WR: 0, TE: 0, K: 0, DEF: 0 },
+      bench: 0,
+      flex: [{ count: 1, eligible: ["RB", "WR"] }],
+      receptionPoints: 0.5,
+      capKickerDefenseAtOne: false,
+    });
+    const run = (positionBudgets: Record<Position, number>) =>
+      runValuationEngineWithMetadata({
+        ...original,
+        league,
+        strategy: strategy({ positionBudgets, minReserve: 1 }),
+        teams: [
+          {
+            rosterId: 1,
+            name: "Me",
+            remainingBudget: 120,
+            openSlots: 1,
+            playerIds: [],
+          },
+        ],
+        myRosterId: 1,
+        purchases: [],
+      }).metadata.needs.mine;
+
+    expect(
+      run({ QB: 0, RB: 100, WR: 20, TE: 0, K: 0, DEF: 0 }),
+    ).toMatchObject({ RB: 1, WR: 0 });
+    expect(
+      run({ QB: 0, RB: 20, WR: 100, TE: 0, K: 0, DEF: 0 }),
+    ).toMatchObject({ RB: 0, WR: 1 });
+  });
+
+  it("progresses capacity and dollars through a filled position and full roster", () => {
+    const league = createLeagueConfig({
+      teams: 1,
+      budget: 20,
+      minBid: 1,
+      starters: { QB: 0, RB: 1, WR: 1, TE: 0, K: 0, DEF: 0 },
+      bench: 0,
+      flex: [],
+      receptionPoints: 0.5,
+      capKickerDefenseAtOne: false,
+    });
+    const players = [
+      player("first-rb", "RB", 120),
+      player("second-rb", "RB", 110),
+      player("needed-wr", "WR", 100),
+    ];
+    const strategyConfig = strategy({
+      positionBudgets: { QB: 0, RB: 10, WR: 10, TE: 0, K: 0, DEF: 0 },
+      minReserve: 2,
+    });
+    const run = (
+      playerIds: string[],
+      remainingBudget: number,
+      openSlots: number,
+      purchases: DraftPurchase[],
+    ) => {
+      const replacementLevels = calculateReplacementLevels({
+        league,
+        players,
+        rosteredPlayerIdsByTeam: [playerIds],
+      });
+      return runValuationEngine({
+        league,
+        strategy: strategyConfig,
+        players,
+        teams: [
+          {
+            rosterId: 1,
+            name: "Me",
+            remainingBudget,
+            openSlots,
+            playerIds,
+          },
+        ],
+        replacementLevels,
+        myRosterId: 1,
+        purchases,
+      });
+    };
+
+    const before = run([], 20, 2, []);
+    const afterRb = run(
+      ["first-rb"],
+      15,
+      1,
+      [purchase("first-rb", 1, 5, 1)],
+    );
+    const complete = run(
+      ["first-rb", "needed-wr"],
+      10,
+      0,
+      [
+        purchase("first-rb", 1, 5, 1),
+        purchase("needed-wr", 1, 5, 2),
+      ],
+    );
+
+    expect(
+      [...before.values()].reduce(
+        (sum, value) => sum + value.displayValue,
+        0,
+      ),
+    ).toBe(20);
+    expect(afterRb.get("second-rb")!.displayValue).toBe(0);
+    expect(afterRb.get("needed-wr")!.displayValue).toBe(15);
+    expect(
+      [...complete.values()].every((value) => value.displayValue === 0),
+    ).toBe(true);
   });
 
   it("adds scarcity at the remaining league fixed-starter boundary", () => {

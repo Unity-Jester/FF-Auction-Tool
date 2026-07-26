@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 
 import type { DraftPurchase, DraftSnapshot } from "@/domain/draft/types";
 import { defaultStrategy } from "@/features/strategy/default-strategies";
+import { mergeProjectionLayers } from "@/integrations/projections/merge-layers";
 import { reconcileDraft } from "@/features/draft-session/reconcile";
 import { useDraftSync } from "@/features/draft-session/use-draft-sync";
 import { leagueSetupStatus, resolveLeagueConfig } from "@/persistence/league-storage";
@@ -418,14 +419,16 @@ export function DraftRoom({ draftId }: { draftId: string }) {
       csvProjectionOverrides: [],
       savedAt: new Date().toISOString(),
     };
-    const projectionMap = new Map(projections.data.projections.map((item) => [item.playerId, item]));
-    activeSession.csvProjectionOverrides.forEach((item) => projectionMap.set(item.playerId, item));
+    const activeProjections = mergeProjectionLayers(
+      projections.data.projections,
+      activeSession.csvProjectionOverrides,
+    );
     return buildDraftRoomViewModel({
       snapshot: reconciled.snapshot,
       league,
       strategy: activeSession.strategy,
       preferences: activeSession.preferences,
-      projections: [...projectionMap.values()],
+      projections: activeProjections,
       projectionSource: projectionLabel(
         projections.data,
         activeSession.csvProjectionOverrides.length > 0,

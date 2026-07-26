@@ -55,6 +55,12 @@ function strategy(starterBudgetShare = 0.75): StrategyConfig {
 function replacementLevels(
   starterPoints: Partial<Record<Position, number>> = {},
   benchPoints: Partial<Record<Position, number>> = {},
+  starterRanks: Partial<Record<Position, number>> = Object.fromEntries(
+    positions.map((position) => [position, 100]),
+  ),
+  benchRanks: Partial<Record<Position, number>> = Object.fromEntries(
+    positions.map((position) => [position, 100]),
+  ),
 ): ReplacementLevels {
   const record = (values: Partial<Record<Position, number>>) =>
     Object.fromEntries(
@@ -62,8 +68,8 @@ function replacementLevels(
     ) as Record<Position, number>;
 
   return {
-    starterRanks: record({}),
-    benchRanks: record({}),
+    starterRanks: record(starterRanks),
+    benchRanks: record(benchRanks),
     starterPoints: record(starterPoints),
     benchPoints: record(benchPoints),
     replacementPlayerIds: { RB: "rb-replacement", K: "k-replacement" },
@@ -403,6 +409,215 @@ describe("calculateBaseValues", () => {
     );
 
     expect(values.get("dual")!.position).toBe("RB");
+  });
+
+  it("allocates dollars only to positions with real remaining capacity", () => {
+    const values = calculateBaseValues(
+      baseInput({
+        league: createLeagueConfig({
+          teams: 1,
+          budget: 10,
+          minBid: 1,
+          starters: { QB: 0, RB: 1, WR: 1, TE: 0, K: 0, DEF: 0 },
+          bench: 0,
+          flex: [],
+          receptionPoints: 0.5,
+          capKickerDefenseAtOne: false,
+        }),
+        players: [
+          player("owned-rb", "RB", 110),
+          player("second-rb", "RB", 100),
+          player("needed-wr", "WR", 90),
+        ],
+        teams: [
+          {
+            rosterId: 1,
+            name: "One",
+            remainingBudget: 10,
+            openSlots: 1,
+            playerIds: ["owned-rb"],
+          },
+        ],
+        replacementLevels: replacementLevels(
+          { RB: 0, WR: 0 },
+          { RB: 0, WR: 0 },
+          { RB: 0, WR: 1 },
+          { RB: 0, WR: 1 },
+        ),
+      }),
+    );
+
+    expect(values.get("second-rb")).toMatchObject({
+      starterVorp: 0,
+      benchVorp: 0,
+      displayValue: 0,
+    });
+    expect(values.get("needed-wr")).toMatchObject({
+      position: "WR",
+      displayValue: 10,
+    });
+  });
+
+  it("does not allocate more players at a position than its remaining rank capacity", () => {
+    const values = calculateBaseValues(
+      baseInput({
+        league: createLeagueConfig({
+          teams: 1,
+          budget: 10,
+          minBid: 1,
+          starters: { QB: 0, RB: 1, WR: 1, TE: 0, K: 0, DEF: 0 },
+          bench: 0,
+          flex: [],
+          receptionPoints: 0.5,
+          capKickerDefenseAtOne: false,
+        }),
+        players: [
+          player("rb-one", "RB", 120),
+          player("rb-two", "RB", 110),
+          player("wr-one", "WR", 80),
+        ],
+        teams: [
+          {
+            rosterId: 1,
+            name: "One",
+            remainingBudget: 10,
+            openSlots: 2,
+            playerIds: [],
+          },
+        ],
+        replacementLevels: replacementLevels(
+          { RB: 0, WR: 0 },
+          { RB: 0, WR: 0 },
+          { RB: 1, WR: 1 },
+          { RB: 1, WR: 1 },
+        ),
+      }),
+    );
+
+    expect(values.get("rb-one")!.displayValue).toBeGreaterThan(0);
+    expect(values.get("rb-two")!.displayValue).toBe(0);
+    expect(values.get("wr-one")!.displayValue).toBeGreaterThan(0);
+    expect(
+      [...values.values()].reduce(
+        (sum, value) => sum + value.displayValue,
+        0,
+      ),
+    ).toBe(10);
+  });
+
+  it("uses only a multi-position player's eligible position with capacity", () => {
+    const values = calculateBaseValues(
+      baseInput({
+        players: [
+          { playerId: "dual", positions: ["RB", "WR"], points: 80 },
+          player("wr-depth", "WR", 10),
+        ],
+        teams: [
+          {
+            rosterId: 1,
+            name: "One",
+            remainingBudget: 2,
+            openSlots: 2,
+            playerIds: [],
+          },
+        ],
+        replacementLevels: replacementLevels(
+          { RB: 0, WR: 40 },
+          { RB: 0, WR: 40 },
+          { RB: 0, WR: 2 },
+          { RB: 0, WR: 2 },
+        ),
+      }),
+    );
+
+    expect(values.get("dual")).toMatchObject({
+      position: "WR",
+      starterVorp: 40,
+      benchVorp: 40,
+    });
+  });
+
+  it("computes starter and bench VORP only when that layer has capacity", () => {
+    const starterOnly = calculateBaseValues(
+      baseInput({
+        players: [player("starter-only", "WR", 100)],
+        teams: [
+          {
+            rosterId: 1,
+            name: "One",
+            remainingBudget: 1,
+            openSlots: 1,
+            playerIds: [],
+          },
+        ],
+        replacementLevels: replacementLevels(
+          { WR: 60 },
+          { WR: 20 },
+          { WR: 1 },
+          { WR: 0 },
+        ),
+      }),
+    );
+    const benchOnly = calculateBaseValues(
+      baseInput({
+        players: [player("bench-only", "WR", 100)],
+        teams: [
+          {
+            rosterId: 1,
+            name: "One",
+            remainingBudget: 1,
+            openSlots: 1,
+            playerIds: [],
+          },
+        ],
+        replacementLevels: replacementLevels(
+          { WR: 60 },
+          { WR: 20 },
+          { WR: 0 },
+          { WR: 1 },
+        ),
+      }),
+    );
+
+    expect(starterOnly.get("starter-only")).toMatchObject({
+      starterVorp: 40,
+      benchVorp: 0,
+    });
+    expect(benchOnly.get("bench-only")).toMatchObject({
+      starterVorp: 0,
+      benchVorp: 80,
+    });
+  });
+
+  it("applies the K/DEF cap only after capacity-aware pool selection", () => {
+    const values = calculateBaseValues(
+      baseInput({
+        players: [
+          player("unneeded-k", "K", 200),
+          player("needed-wr", "WR", 100),
+          player("needed-def", "DEF", 90),
+        ],
+        teams: [
+          {
+            rosterId: 1,
+            name: "One",
+            remainingBudget: 10,
+            openSlots: 2,
+            playerIds: [],
+          },
+        ],
+        replacementLevels: replacementLevels(
+          { K: 0, WR: 0, DEF: 0 },
+          { K: 0, WR: 0, DEF: 0 },
+          { K: 0, WR: 1, DEF: 1 },
+          { K: 0, WR: 1, DEF: 1 },
+        ),
+      }),
+    );
+
+    expect(values.get("unneeded-k")!.displayValue).toBe(0);
+    expect(values.get("needed-def")!.displayValue).toBe(1);
+    expect(values.get("needed-wr")!.displayValue).toBe(9);
   });
 
   it("ignores drafted players, malformed projections, and unsupported positions", () => {

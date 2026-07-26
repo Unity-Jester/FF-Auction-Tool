@@ -36,6 +36,22 @@ describe("fixture control route", () => {
     );
   });
 
+  it("allows the isolated unknown-scoring review fixture", async () => {
+    vi.stubEnv("NODE_ENV", "test");
+    vi.stubEnv("E2E_FIXTURES", "1");
+
+    const response = await createFixtureControlHandler()(
+      new Request(
+        "http://localhost/api/e2e/fixtures?step=0&state=unknown-scoring",
+      ),
+    );
+
+    expect(response.status).toBe(204);
+    expect(response.headers.getSetCookie().join(";")).toContain(
+      "sac-e2e-state=unknown-scoring",
+    );
+  });
+
   it("rejects malformed controls without setting cookies", async () => {
     vi.stubEnv("NODE_ENV", "test");
     vi.stubEnv("E2E_FIXTURES", "1");

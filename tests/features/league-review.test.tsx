@@ -175,6 +175,43 @@ describe("LeagueReview", () => {
     expect(screen.getByLabelText("TE reception bonus")).toHaveValue("1.5");
   });
 
+  it("labels persisted corrections against the imported source after reload", () => {
+    const corrected = createLeagueConfig({
+      ...league,
+      teams: 10,
+      receptionPoints: 0.5,
+      capKickerDefenseAtOne: true,
+    });
+
+    render(
+      <LeagueReview
+        draftId="provenance-reload"
+        league={corrected}
+        importedLeague={league}
+        warnings={[
+          {
+            code: "SCORING_INFERRED",
+            source: "draft.metadata.scoring_type",
+            message: "Reception scoring inferred from ppr",
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByLabelText("Teams").closest("label")).toHaveTextContent(
+      "Local edit",
+    );
+    expect(
+      screen.getByLabelText("Reception points").closest("label"),
+    ).toHaveTextContent("Local edit");
+    expect(screen.getByLabelText("Pass touchdown").closest("label")).toHaveTextContent(
+      "Defaulted",
+    );
+    expect(screen.getByLabelText("K/DEF at $1").closest("label")).toHaveTextContent(
+      "Default",
+    );
+  });
+
   it("distinguishes intentional setup edits from later upstream structural drift", () => {
     const corrected = { ...league, teams: 10 };
     saveLeagueConfig("baseline-draft", corrected, league);

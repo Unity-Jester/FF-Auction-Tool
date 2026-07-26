@@ -61,28 +61,54 @@ test.describe("guest auction journey", () => {
     await expect(selected.getByText(/Strategy ceiling.*Hard legal max/i)).toBeVisible();
 
     const playerRowBefore = await page
-      .getByRole("button", { name: /Brock Bowers/i })
+      .getByRole("button", { name: /Bijan Robinson/i })
       .locator("xpath=ancestor::tr")
       .innerText();
+    expect(playerRowBefore).toBe(
+      "Bijan Robinson\nATL · RB\n\t322.9\t$40\t$46\t$46",
+    );
+    await page.getByRole("button", { name: /Bijan Robinson/i }).click();
+    await expect(selected).toContainText(
+      "Base value$40Adjusted value$46Recommended max$46",
+    );
+    await expect(selected).toContainText(
+      "Strategy ceiling $47 · Hard legal max $47",
+    );
+    await expect(selected).toContainText(
+      "League inflation 1.00× · RB inflation 1.00×",
+    );
 
     await setFixture(page, 1);
-    await expect(selected.getByRole("heading", { name: "Brock Bowers" })).toBeVisible({
+    await expect(selected.getByRole("heading", { name: "Bijan Robinson" })).toBeVisible({
       timeout: 8_000,
     });
+    await expect(selected).toContainText(
+      "Base value$33Adjusted value$38Recommended max$8",
+    );
+    await expect(selected).toContainText("Strategy ceiling $8 · Hard legal max $8");
+    await expect(selected).toContainText(
+      "Bijan Robinson · RB need · Elite tier · 1 remain · max $8",
+    );
+    await expect(selected).toContainText(
+      "League inflation 0.80× · RB inflation 0.82×",
+    );
     await expect(page.getByText("Latest purchase · $40")).toBeVisible();
     await expect(
       page.getByRole("heading", { name: "Team 1" }).locator("xpath=ancestor::section"),
     ).toContainText("$10");
 
     const playerRowAfter = await page
-      .getByRole("button", { name: /Brock Bowers/i })
+      .getByRole("button", { name: /Bijan Robinson/i })
       .locator("xpath=ancestor::tr")
       .innerText();
+    expect(playerRowAfter).toBe(
+      "Bijan Robinson\nATL · RB\n\t322.9\t$33\t$38\t$8",
+    );
     expect(playerRowAfter).not.toBe(playerRowBefore);
 
     await setFixture(page, 1, "offline");
     await expect(page.getByText("Stale")).toBeVisible({ timeout: 8_000 });
-    await expect(selected.getByRole("heading", { name: "Brock Bowers" })).toBeVisible();
+    await expect(selected.getByRole("heading", { name: "Bijan Robinson" })).toBeVisible();
 
     await setFixture(page, 1, "online");
     await page.getByRole("button", { name: "Retry sync" }).click();
@@ -100,7 +126,7 @@ test.describe("guest auction journey", () => {
 
     await page.reload();
     await expect(page.getByText("Auction Companion")).toBeVisible();
-    await expect(selected.getByRole("heading", { name: "Brock Bowers" })).toBeVisible();
+    await expect(selected.getByRole("heading", { name: "Bijan Robinson" })).toBeVisible();
     expect(sleeperRequests.length).toBeGreaterThan(0);
     expect(new Set(sleeperRequests.map((request) => request.method))).toEqual(
       new Set(["GET"]),
@@ -135,6 +161,38 @@ test.describe("guest auction journey", () => {
 
     await page.reload();
     await expect(myTeam).not.toContainText("Local correction");
+  });
+
+  test("loads the completed fixture with exact final balances and no duplicate players", async ({
+    page,
+  }, testInfo) => {
+    test.skip(testInfo.project.name !== "desktop-1440");
+    await enterDraftRoom(page);
+    await setFixture(page, 16);
+    await page.reload();
+
+    await expect(page.getByText("Draft complete", { exact: true })).toBeVisible();
+    const summary = page.getByRole("heading", {
+      name: "Final rosters and balances",
+    }).locator("xpath=ancestor::section");
+    await expect(summary).toContainText("Team 1$7 · 4 players");
+    await expect(summary).toContainText("Team 2$6 · 4 players");
+    await expect(summary).toContainText("Team 3$16 · 4 players");
+    await expect(summary).toContainText("Team 4$13 · 4 players");
+
+    const teamOne = page
+      .getByText("Team 1 · You", { exact: true })
+      .locator("xpath=ancestor::details");
+    await expect(teamOne).toContainText("$7 · max $0");
+    for (const playerName of [
+      "Trey McBride",
+      "Jalen Hurts",
+      "Justin Jefferson",
+      "Josh Jacobs",
+    ]) {
+      await expect(teamOne.getByText(new RegExp(playerName))).toHaveCount(1);
+    }
+    await expect(page.getByRole("button", { name: /^Edit league purchase/ })).toHaveCount(0);
   });
 
   test("keeps the live room readable in the system light theme", async ({
@@ -178,8 +236,10 @@ test.describe("guest auction journey", () => {
     await page.getByRole("button", { name: "Set strategy" }).click();
 
     const player = page.getByRole("combobox", { name: "Player" });
-    const bijan = player.locator("option", { hasText: "Bijan Robinson" });
-    await player.selectOption(await bijan.getAttribute("value") ?? "");
+    await player.fill("Bijan Robinson");
+    await page
+      .getByRole("option", { name: /Bijan Robinson.*ATL.*RB.*9509/ })
+      .click();
     await page.getByRole("button", { name: "Target player" }).click();
     await page.getByLabel("Manual value").fill("47");
     await page.getByRole("button", { name: "Set manual value" }).click();
@@ -214,6 +274,26 @@ test.describe("guest auction journey", () => {
     await expect(page.getByLabel("Selected player")).toContainText("target");
   });
 
+  test("requires explicit confirmation for unknown scoring before strategy setup", async ({
+    page,
+  }, testInfo) => {
+    test.skip(testInfo.project.name !== "desktop-1440");
+    await setFixture(page, 0, "unknown-scoring");
+    await page.goto(`/draft/${MOCK_DRAFT_ID}/setup`);
+
+    await expect(
+      page.getByText("Sleeper did not provide usable scoring rules."),
+    ).toBeVisible();
+    const continueButton = page.getByRole("button", { name: "Set strategy" });
+    await expect(continueButton).toBeDisabled();
+    await page.getByLabel("I verified the scoring rules").check();
+    await expect(continueButton).toBeEnabled();
+    await continueButton.click();
+    await expect(page).toHaveURL(
+      new RegExp(`/draft/${MOCK_DRAFT_ID}/strategy$`),
+    );
+  });
+
   test("supports username discovery and rejects invalid input", async ({
     page,
   }, testInfo) => {
@@ -230,20 +310,33 @@ test.describe("guest auction journey", () => {
     await expect(
       page.getByRole("button", { name: "Review Recorded mock auction" }),
     ).toBeVisible();
+    await page
+      .getByRole("button", { name: "Review Recorded league auction" })
+      .click();
+    await expect(page).toHaveURL(/\/draft\/9876543210\/setup$/);
+    await page.getByRole("button", { name: "Set strategy" }).click();
+    await page.getByRole("button", { name: "Enter draft room" }).click();
+    await page.getByRole("button", { name: /^Team 1/ }).click();
+    await expect(page).toHaveURL(/\/draft\/9876543210$/);
+    await expect(page.getByText("Auction Companion")).toBeVisible();
 
-    await input.fill("bad input!");
+    await page.goto("/");
+    const homeInput = page.getByLabel("Sleeper username or draft link");
+    await homeInput.fill("bad input!");
     await page.getByRole("button", { name: "Connect draft" }).click();
     await expect(
       page.getByText("Enter a Sleeper username, draft ID, or draft link."),
     ).toBeVisible();
 
-    await input.fill("9999999999");
+    await homeInput.fill("9999999999");
     await page.getByRole("button", { name: "Connect draft" }).click();
     await expect(page).toHaveURL(/\/draft\/9999999999\/setup$/);
     await expect(page.getByText(/snake draft.*auction drafts only/i)).toBeVisible();
 
     await page.goto("/");
-    await input.fill(MOCK_DRAFT_ID);
+    await page
+      .getByLabel("Sleeper username or draft link")
+      .fill(MOCK_DRAFT_ID);
     await page.getByRole("button", { name: "Connect draft" }).click();
     await expect(page).toHaveURL(new RegExp(`/draft/${MOCK_DRAFT_ID}/setup$`));
   });

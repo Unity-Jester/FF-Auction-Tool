@@ -47,6 +47,27 @@ type ValuedPlayer = Omit<
   "baseValue" | "displayValue" | "inflationMultiplier"
 >;
 
+type CapacityValuedPlayer = ValuedPlayer & {
+  hasCapacity: boolean;
+};
+
+type PositionValuation = Pick<
+  CapacityValuedPlayer,
+  "position" | "starterVorp" | "benchVorp" | "blendedVorp" | "hasCapacity"
+>;
+
+function publicValuedPlayer(player: CapacityValuedPlayer): ValuedPlayer {
+  return {
+    playerId: player.playerId,
+    position: player.position,
+    points: player.points,
+    starterVorp: player.starterVorp,
+    benchVorp: player.benchVorp,
+    blendedVorp: player.blendedVorp,
+    replacementPlayerId: player.replacementPlayerId,
+  };
+}
+
 function compareIds(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
@@ -209,30 +230,44 @@ function blendVorp(
   );
 }
 
+function positionValuations(
+  player: CanonicalPlayer,
+  replacementLevels: ReplacementLevels,
+  starterBudgetShare: number,
+): PositionValuation[] {
+  return player.positions.map((position) => {
+    const hasStarterCapacity = replacementLevels.starterRanks[position] > 0;
+    const hasBenchCapacity = replacementLevels.benchRanks[position] > 0;
+    const starterVorp = hasStarterCapacity
+      ? vorp(player.points, replacementLevels.starterPoints[position])
+      : 0;
+    const benchVorp = hasBenchCapacity
+      ? vorp(player.points, replacementLevels.benchPoints[position])
+      : 0;
+    return {
+      position,
+      starterVorp,
+      benchVorp,
+      blendedVorp: blendVorp(starterVorp, benchVorp, starterBudgetShare),
+      hasCapacity: hasStarterCapacity || hasBenchCapacity,
+    };
+  });
+}
+
 function valuePlayers(
   players: ReadonlyArray<CanonicalPlayer>,
   replacementLevels: ReplacementLevels,
   starterBudgetShare: number,
-): ValuedPlayer[] {
+): CapacityValuedPlayer[] {
   return players.map((player) => {
-    const values = player.positions.map((position) => {
-      const starterVorp = vorp(
-        player.points,
-        replacementLevels.starterPoints[position],
-      );
-      const benchVorp = vorp(
-        player.points,
-        replacementLevels.benchPoints[position],
-      );
-      return {
-        position,
-        starterVorp,
-        benchVorp,
-        blendedVorp: blendVorp(starterVorp, benchVorp, starterBudgetShare),
-      };
-    });
+    const values = positionValuations(
+      player,
+      replacementLevels,
+      starterBudgetShare,
+    );
     const selected = values.sort(
       (left, right) =>
+        Number(right.hasCapacity) - Number(left.hasCapacity) ||
         right.blendedVorp - left.blendedVorp ||
         SUPPORTED_POSITIONS.indexOf(left.position) -
           SUPPORTED_POSITIONS.indexOf(right.position),
@@ -248,6 +283,169 @@ function valuePlayers(
   });
 }
 
+type FlowEdge = {
+  to: number;
+  reverseIndex: number;
+  capacity: number;
+  cost: number;
+  position?: Position;
+};
+
+function selectCapacityAwarePool(
+  players: ReadonlyArray<CanonicalPlayer>,
+  replacementLevels: ReplacementLevels,
+  starterBudgetShare: number,
+  openSlots: number,
+): CapacityValuedPlayer[] {
+  if (openSlots === 0) return [];
+  const candidates = players.map((player) => ({
+    player,
+    values: positionValuations(
+      player,
+      replacementLevels,
+      starterBudgetShare,
+    ).filter((value) => value.hasCapacity),
+  }));
+  const maximumVorp = candidates.reduce(
+    (maximum, candidate) =>
+      candidate.values.reduce(
+        (innerMaximum, value) =>
+          Math.max(innerMaximum, value.blendedVorp),
+        maximum,
+      ),
+    0,
+  );
+  const pointValues = candidates.map(({ player }) => player.points);
+  const minimumPoints = Math.min(...pointValues);
+  const maximumPoints = Math.max(...pointValues);
+  const pointRange = maximumPoints - minimumPoints;
+  const source = 0;
+  const playerOffset = 1;
+  const positionOffset = playerOffset + candidates.length;
+  const sink = positionOffset + SUPPORTED_POSITIONS.length;
+  const graph: FlowEdge[][] = Array.from({ length: sink + 1 }, () => []);
+  const addEdge = (
+    from: number,
+    to: number,
+    capacity: number,
+    cost: number,
+    position?: Position,
+  ) => {
+    const forward: FlowEdge = {
+      to,
+      reverseIndex: graph[to].length,
+      capacity,
+      cost,
+      position,
+    };
+    const reverse: FlowEdge = {
+      to: from,
+      reverseIndex: graph[from].length,
+      capacity: 0,
+      cost: -cost,
+    };
+    graph[from].push(forward);
+    graph[to].push(reverse);
+  };
+
+  candidates.forEach((candidate, playerIndex) => {
+    const playerNode = playerOffset + playerIndex;
+    addEdge(source, playerNode, 1, 0);
+    candidate.values.forEach((value) => {
+      const normalizedVorp =
+        maximumVorp > 0 ? value.blendedVorp / maximumVorp : 0;
+      const normalizedPoints =
+        pointRange > 0
+          ? (candidate.player.points - minimumPoints) / pointRange
+          : 1;
+      const stablePlayerTie =
+        (candidates.length - playerIndex) /
+        Math.max(1, candidates.length);
+      const stablePositionTie =
+        (SUPPORTED_POSITIONS.length -
+          SUPPORTED_POSITIONS.indexOf(value.position)) /
+        SUPPORTED_POSITIONS.length;
+      const score =
+        normalizedVorp * 1e12 +
+        normalizedPoints * 1e6 +
+        stablePlayerTie * 1e3 +
+        stablePositionTie;
+      addEdge(
+        playerNode,
+        positionOffset + SUPPORTED_POSITIONS.indexOf(value.position),
+        1,
+        -score,
+        value.position,
+      );
+    });
+  });
+  SUPPORTED_POSITIONS.forEach((position, index) => {
+    const capacity = Math.max(
+      replacementLevels.starterRanks[position],
+      replacementLevels.benchRanks[position],
+    );
+    if (capacity > 0) {
+      addEdge(positionOffset + index, sink, Math.min(capacity, openSlots), 0);
+    }
+  });
+
+  let flow = 0;
+  while (flow < openSlots) {
+    const distances = Array<number>(graph.length).fill(Number.POSITIVE_INFINITY);
+    const previousNode = Array<number>(graph.length).fill(-1);
+    const previousEdge = Array<number>(graph.length).fill(-1);
+    const queued = Array<boolean>(graph.length).fill(false);
+    const queue = [source];
+    distances[source] = 0;
+    queued[source] = true;
+    for (let cursor = 0; cursor < queue.length; cursor += 1) {
+      const node = queue[cursor];
+      queued[node] = false;
+      graph[node].forEach((edge, edgeIndex) => {
+        if (edge.capacity <= 0) return;
+        const distance = distances[node] + edge.cost;
+        if (distance >= distances[edge.to] - 1e-9) return;
+        distances[edge.to] = distance;
+        previousNode[edge.to] = node;
+        previousEdge[edge.to] = edgeIndex;
+        if (!queued[edge.to]) {
+          queue.push(edge.to);
+          queued[edge.to] = true;
+        }
+      });
+    }
+    if (previousNode[sink] === -1) {
+      throw new Error(
+        "Remaining capacity-aware player pool cannot fill every open slot",
+      );
+    }
+    for (let node = sink; node !== source; node = previousNode[node]) {
+      const from = previousNode[node];
+      const edge = graph[from][previousEdge[node]];
+      edge.capacity -= 1;
+      graph[node][edge.reverseIndex].capacity += 1;
+    }
+    flow += 1;
+  }
+
+  return candidates.flatMap((candidate, playerIndex) => {
+    const assignedEdge = graph[playerOffset + playerIndex].find(
+      (edge) => edge.position !== undefined && edge.capacity === 0,
+    );
+    if (assignedEdge?.position === undefined) return [];
+    const selected = candidate.values.find(
+      (value) => value.position === assignedEdge.position,
+    )!;
+    return [{
+      playerId: candidate.player.playerId,
+      points: candidate.player.points,
+      ...selected,
+      replacementPlayerId:
+        replacementLevels.replacementPlayerIds[selected.position],
+    }];
+  });
+}
+
 function isCapped(player: ValuedPlayer, league: LeagueConfig): boolean {
   return (
     league.capKickerDefenseAtOne &&
@@ -257,6 +455,16 @@ function isCapped(player: ValuedPlayer, league: LeagueConfig): boolean {
 
 function validateReplacementLevels(replacementLevels: ReplacementLevels): void {
   SUPPORTED_POSITIONS.forEach((position) => {
+    if (
+      !Number.isSafeInteger(replacementLevels.starterRanks[position]) ||
+      replacementLevels.starterRanks[position] < 0 ||
+      !Number.isSafeInteger(replacementLevels.benchRanks[position]) ||
+      replacementLevels.benchRanks[position] < 0
+    ) {
+      throw new Error(
+        `Replacement ranks for ${position} must be non-negative integers`,
+      );
+    }
     if (
       !Number.isFinite(replacementLevels.starterPoints[position]) ||
       !Number.isFinite(replacementLevels.benchPoints[position])
@@ -421,14 +629,23 @@ export function calculateBaseValues({
     replacementLevels,
     strategy.starterBudgetShare,
   );
-  const draftablePlayers = [...valuedPlayers]
-    .sort(
-      (left, right) =>
-        right.blendedVorp - left.blendedVorp ||
-        right.points - left.points ||
-        compareIds(left.playerId, right.playerId),
-    )
-    .slice(0, openSlots);
+  const draftablePlayers = selectCapacityAwarePool(
+    canonicalPlayers,
+    replacementLevels,
+    strategy.starterBudgetShare,
+    openSlots,
+  ).sort(
+    (left, right) =>
+      right.blendedVorp - left.blendedVorp ||
+      right.points - left.points ||
+      compareIds(left.playerId, right.playerId),
+  );
+  const draftableById = new Map(
+    draftablePlayers.map((player) => [player.playerId, player]),
+  );
+  const outputValuedPlayers = valuedPlayers.map(
+    (player) => draftableById.get(player.playerId) ?? player,
+  );
   const draftableIds = new Set(
     draftablePlayers.map((player) => player.playerId),
   );
@@ -457,7 +674,7 @@ export function calculateBaseValues({
   }
 
   const baseValues = new Map<string, number>();
-  valuedPlayers.forEach((player) => {
+  outputValuedPlayers.forEach((player) => {
     if (!draftableIds.has(player.playerId)) {
       baseValues.set(player.playerId, 0);
       return;
@@ -484,7 +701,8 @@ export function calculateBaseValues({
   );
 
   return new Map(
-    valuedPlayers.map((player) => {
+    outputValuedPlayers.map((player) => {
+      const publicPlayer = publicValuedPlayer(player);
       const baseValue = baseValues.get(player.playerId)!;
       const displayValue = roundedDraftableValues.get(player.playerId) ?? 0;
       const preDraftValue = preDraftDisplayValues?.get(player.playerId);
@@ -501,7 +719,7 @@ export function calculateBaseValues({
       return [
         player.playerId,
         {
-          ...player,
+          ...publicPlayer,
           baseValue,
           displayValue,
           inflationMultiplier,

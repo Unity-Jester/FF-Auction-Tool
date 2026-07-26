@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  E2E_MAX_STEP,
   fixtureModeEnabled,
   fixtureStepFromRequest,
 } from "@/testing/e2e-fixtures";
@@ -49,7 +50,7 @@ describe("E2E fixture isolation", () => {
     );
     expect(
       fixtureStepFromRequest(request("sac-e2e-step=999"), environment),
-    ).toBe(2);
+    ).toBe(E2E_MAX_STEP);
     expect(
       fixtureStepFromRequest(request("sac-e2e-step=-1"), environment),
     ).toBe(0);
