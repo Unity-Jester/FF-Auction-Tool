@@ -50,8 +50,21 @@ async function fetchDraft(
     `/api/sleeper/drafts/${encodeURIComponent(draftId)}`,
     { signal },
   );
-  if (!response.ok) throw new Error("Unable to refresh Sleeper draft");
-  return parseDraftApiResponse(await response.json(), draftId);
+  const payload = await response.json();
+  if (!response.ok) {
+    const message =
+      payload &&
+      typeof payload === "object" &&
+      "error" in payload &&
+      payload.error &&
+      typeof payload.error === "object" &&
+      "message" in payload.error &&
+      typeof payload.error.message === "string"
+        ? payload.error.message
+        : "Unable to refresh Sleeper draft";
+    throw new Error(message);
+  }
+  return parseDraftApiResponse(payload, draftId);
 }
 
 function interval(snapshot: DraftSnapshot | undefined, failures: number) {
@@ -107,5 +120,6 @@ export function useDraftSync(
     syncStatus,
     lastUpdatedAt: query.data?.lastUpdatedAt ?? null,
     retry: query.refetch,
+    error: query.error,
   };
 }

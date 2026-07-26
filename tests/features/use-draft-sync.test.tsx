@@ -70,6 +70,7 @@ describe("useDraftSync", () => {
     expect(result.current.syncStatus).toBe("stale");
     expect(result.current.data?.draftId).toBe("draft-1");
     expect(result.current.retry).toEqual(expect.any(Function));
+    expect(result.current.error).toHaveProperty("message", "offline");
   });
 
   it("does not resume polling when a completed draft manual refresh fails", async () => {
