@@ -229,6 +229,9 @@
 .emptyState a { display: inline-block; margin-top: .45rem; color: var(--color-text); }
 .correctionControl { margin-top: .4rem; }
 .correctionControl form { display: flex; margin-top: .5rem; gap: .5rem; align-items: end; }
+.manualCorrection { display: flex; width: 100%; margin: 0; padding: .5rem 0 0; gap: .5rem; border: 0; flex-wrap: wrap; }
+.manualCorrection legend { color: var(--color-text); font-weight: 700; }
+.manualCorrection > p { flex-basis: 100%; margin: 0; color: var(--color-text-muted); font-size: .72rem; line-height: 1.35; }
 .correctionControl label { display: grid; gap: .2rem; color: var(--color-text-muted); font: .65rem var(--font-mono); text-transform: uppercase; }
 .correctionError { margin: .4rem 0 0; color: #ff867b; font-size: .75rem; }
 .loadMore { width: 100%; min-height: var(--target-size); border: 0; border-bottom: 1px solid var(--color-line); background: var(--color-surface); color: var(--color-text); }
@@ -261,6 +264,19 @@
 .correctionControl form button.criticalAction {
   min-height: var(--target-size);
 }
+.helpTrigger { min-height: var(--target-size); border: 0; background: transparent; color: var(--color-text-muted); text-decoration: underline; }
+.recovery { display: flex; padding: .75rem 1rem; align-items: center; flex-wrap: wrap; gap: .5rem 1rem; border-bottom: 1px solid var(--color-line); color: var(--color-text-muted); }
+.recovery h2, .recovery p { margin: 0; font-size: .8rem; }
+.recovery h2 { color: #ffc561; }
+.recovery p { max-width: 56rem; }
+.recovery button { margin-left: auto; }
+.helpBackdrop { position: fixed; z-index: 100; inset: 0; display: grid; padding: 1rem; place-items: center; background: rgb(0 0 0 / 65%); }
+.helpDialog { width: min(42rem, 100%); max-height: min(42rem, calc(100svh - 2rem)); overflow: auto; padding: 1.25rem; border: 1px solid var(--color-line); border-radius: var(--radius); background: var(--color-surface-raised); box-shadow: 0 1rem 4rem rgb(0 0 0 / 50%); }
+.helpHeading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--color-line); }
+.helpHeading h2 { margin: 0 0 1rem; }
+.helpHeading button { min-height: var(--target-size); border: 0; background: transparent; color: var(--color-text); text-decoration: underline; }
+.helpDialog h3 { margin-top: 1.5rem; font-size: 1rem; }
+.helpDialog p { color: var(--color-text-muted); line-height: 1.55; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes enter { from { opacity: 0; } }
 

@@ -17,6 +17,8 @@ type SyncedDraft = {
   lastUpdatedAt: string;
 };
 
+type StableSyncError = Error & { code?: string };
+
 function isSyncedDraft(value: unknown): value is SyncedDraft {
   return (
     !!value &&
@@ -52,6 +54,9 @@ async function fetchDraft(
   );
   const payload = await response.json();
   if (!response.ok) {
+    const code = payload && typeof payload === "object" && "error" in payload && payload.error &&
+      typeof payload.error === "object" && "code" in payload.error && typeof payload.error.code === "string"
+      ? payload.error.code : undefined;
     const message =
       payload &&
       typeof payload === "object" &&
@@ -62,7 +67,9 @@ async function fetchDraft(
       typeof payload.error.message === "string"
         ? payload.error.message
         : "Unable to refresh Sleeper draft";
-    throw new Error(message);
+    const error: StableSyncError = new Error(message);
+    error.code = code;
+    throw error;
   }
   return parseDraftApiResponse(payload, draftId);
 }

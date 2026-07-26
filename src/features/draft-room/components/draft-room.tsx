@@ -18,6 +18,9 @@ import { LeagueRosters } from "./league-rosters";
 import { MyRoster } from "./my-roster";
 import { PlayerBoard } from "./player-board";
 import { SyncStatus } from "./sync-status";
+import { ManualCorrection } from "./manual-correction";
+import { Methodology } from "@/features/help/components/methodology";
+import { RecoveryPanel, recoveryCode } from "@/features/errors/components/recovery-panel";
 
 type Tab = "now" | "players" | "team" | "league";
 const tabs: Array<[Tab, string]> = [
@@ -48,6 +51,7 @@ export function DraftRoomView({
   onReverseCorrection,
   onAddCorrection,
   onChangeRoster,
+  syncError,
 }: {
   model: DraftRoomViewModel;
   onRetry: () => void;
@@ -55,6 +59,7 @@ export function DraftRoomView({
   onReverseCorrection?: (playerId: string) => void;
   onAddCorrection?: (playerId: string, rosterId: number, amount: number) => void;
   onChangeRoster?: () => void;
+  syncError?: unknown;
 }) {
   const [selectedPlayerId, setSelectedPlayerId] = useState(model.selectedPlayerId);
   const [tab, setTab] = useState<Tab>("now");
@@ -152,6 +157,7 @@ export function DraftRoomView({
         <div className={styles.topMeta}>
           <span className={styles.draftState}>{model.draftStatus === "complete" ? "Draft complete" : model.draftStatus === "pre" ? "Pre-draft" : "Live draft"}</span>
           {onChangeRoster && <button className={styles.changeRoster} type="button" onClick={onChangeRoster}>Change roster</button>}
+          <Methodology projectionSource={model.projectionLabel} projectionStale={model.projectionStatus !== "fresh"} />
           <SyncStatus status={model.syncStatus} lastUpdatedAt={model.lastUpdatedAt} onRetry={onRetry} />
         </div>
       </header>
@@ -160,6 +166,7 @@ export function DraftRoomView({
           {model.projectionStatus === "empty" ? "Projection data is unavailable." : "Using stale projection data."} {model.projectionLabel}
         </p>
       )}
+      {model.syncStatus !== "fresh" && <RecoveryPanel code={recoveryCode(syncError)} lastUpdatedAt={model.lastUpdatedAt} />}
       {model.configurationNotice && (
         <p className={styles.notice} role="status">{model.configurationNotice}</p>
       )}
@@ -217,6 +224,7 @@ export function DraftRoomView({
                   closeCorrection();
                 }
               }}>
+                <ManualCorrection playerName={existingPurchase?.player.name ?? selected?.name ?? "selected player"}>
                 <label>Assign to
                   <select aria-label="Assign to" value={correctionTeam} onChange={(event) => {
                     setCorrectionTeam(event.target.value);
@@ -232,6 +240,7 @@ export function DraftRoomView({
                   }} />
                 </label>
                 <button className={styles.criticalAction} type="submit">Save local correction</button>
+                </ManualCorrection>
               </form>
               {(correctionCapacityError || correctionError) && (
                 <p className={styles.correctionError} role="alert">
@@ -372,7 +381,7 @@ export function DraftRoom({ draftId }: { draftId: string }) {
         : valuationModel.selectedPlayerId,
   } : null, [selectedPlayerId, session, sync.lastUpdatedAt, sync.syncStatus, valuationModel]);
   if (!sync.data && sync.syncStatus === "offline") {
-    return <section className={styles.blocking}><h1>Draft is unavailable.</h1><p>{sync.error instanceof Error ? sync.error.message : "No saved snapshot is available yet."}</p><button type="button" onClick={() => sync.retry()}>Retry sync</button></section>;
+    return <section className={styles.blocking}><h1>Draft is unavailable.</h1><RecoveryPanel code={recoveryCode(sync.error)} lastUpdatedAt={null} onRetry={() => sync.retry()} /></section>;
   }
   if (!sync.data || projections.isLoading || players.isLoading) {
     return <section className={styles.blocking} aria-live="polite"><span className={styles.loader} /><h1>Loading draft room</h1><p>Syncing Sleeper, projections, and your saved plan.</p></section>;
@@ -400,6 +409,7 @@ export function DraftRoom({ draftId }: { draftId: string }) {
   return <DraftRoomView
     model={model}
     onRetry={() => sync.retry()}
+    syncError={sync.error}
     onSelectPlayer={setSelectedPlayerId}
     onChangeRoster={() => {
       try { localStorage.removeItem(rosterKey(draftId)); } catch {}
