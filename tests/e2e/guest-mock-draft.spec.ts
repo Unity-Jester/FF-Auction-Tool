@@ -9,6 +9,28 @@ import {
 } from "./helpers";
 
 test.describe("guest auction journey", () => {
+  test("configured signed-out browsing does not contact account providers", async ({
+    page,
+  }, testInfo) => {
+    test.skip(testInfo.project.name !== "desktop-1440");
+    test.skip(
+      !process.env.NEXT_PUBLIC_SUPABASE_URL,
+      "Run this check with the complete public account test configuration.",
+    );
+    const accountProviderRequests: string[] = [];
+    page.on("request", (request) => {
+      if (/supabase|hcaptcha/i.test(request.url())) {
+        accountProviderRequests.push(request.url());
+      }
+    });
+
+    await page.goto("/");
+    await expect(page.getByRole("button", { name: "Account" })).toBeVisible();
+    await page.waitForTimeout(500);
+
+    expect(accountProviderRequests).toEqual([]);
+  });
+
   test("connects, configures stars and scrubs, advances picks, and recovers without duplicates", async ({
     page,
   }, testInfo) => {

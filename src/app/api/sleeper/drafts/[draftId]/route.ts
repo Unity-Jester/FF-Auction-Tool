@@ -156,7 +156,10 @@ export function createDraftHandler(
     }
 
     try {
-      const activeCache = { next: { revalidate: 2 } } as const;
+      const activeCache = {
+        next: { revalidate: 2 },
+        signal: request.signal,
+      } as const;
       const [draft, picks] = await Promise.all([
         client.getDraft(draftId, activeCache),
         client.getDraftPicks(draftId, activeCache),
@@ -167,13 +170,27 @@ export function createDraftHandler(
       if (draft.league_id != null) {
         const leagueId = String(draft.league_id);
         [league, users, rosters] = await Promise.all([
-          client.getLeague(leagueId, { next: { revalidate: 300 } }),
-          client.getLeagueUsers(leagueId, { next: { revalidate: 300 } }),
-          client.getLeagueRosters(leagueId, { next: { revalidate: 300 } }),
+          client.getLeague(leagueId, {
+            next: { revalidate: 300 },
+            signal: request.signal,
+          }),
+          client.getLeagueUsers(leagueId, {
+            next: { revalidate: 300 },
+            signal: request.signal,
+          }),
+          client.getLeagueRosters(leagueId, {
+            next: { revalidate: 300 },
+            signal: request.signal,
+          }),
         ]);
       }
       return NextResponse.json(
         normalizeDraft({ draft, picks, league, users, rosters }),
+        {
+          headers: {
+            "Cache-Control": "public, s-maxage=1, stale-while-revalidate=2",
+          },
+        },
       );
     } catch (error) {
       if (

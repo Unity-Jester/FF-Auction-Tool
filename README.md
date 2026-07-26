@@ -28,7 +28,10 @@ the current player.
 Guest mode provides the complete setup, strategy, draft-room, CSV import, and
 local-correction experience. The browser stores league setup, strategy, selected
 roster, CSV overrides, and local corrections on that device. Clearing site data
-removes them. No account service is contacted or downloaded during a guest session.
+removes them. When account sync is configured, a signed-out page loads only the
+local Account button. Supabase, CAPTCHA, and the account implementation are not
+downloaded or contacted unless the user opens Account or the browser already has
+evidence of an account session.
 
 The server reads Sleeper's public endpoints with `GET` requests. It never bids,
 drafts, changes a league, or writes to Sleeper. The app does not store raw Sleeper
@@ -59,11 +62,14 @@ player_id,name,team,position,pass_yd,pass_td,pass_int,rush_yd,rush_td,rec,rec_yd
 ```
 
 At least one supported statistic is required per row. Files are limited to 1 MB
-and 5,000 rows. `player_id` is the safest match. Without it, matching uses the
+and 5,000 rows, with no more than 2,000 uniquely matched overrides per import so
+the result always fits the session limit. The file size is checked before the
+browser reads it. `player_id` is the safest match. Without it, matching uses the
 normalized name plus optional team and position. The import review separately
-reports matched, unmatched, ambiguous, duplicate, and unsupported rows. Only
-uniquely matched rows become local overrides; formulas and non-plain numeric
-statistics are rejected.
+reports matched, unmatched, ambiguous, duplicate, and unsupported rows. An import
+over the matched limit is rejected with guidance while unmatched and ambiguous
+rows remain visible for review. Only uniquely matched rows become local overrides;
+formulas and non-plain numeric statistics are rejected.
 
 ## Optional account sync
 
@@ -94,9 +100,24 @@ league rosters, draft history, projections, or CSV source files.
 Without extra services, each server instance applies a conservative in-memory
 limit to public Sleeper proxy routes. For a multi-instance deployment, configure
 both `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` for shared limiting.
+Client addresses are converted to keyed HMAC values before a shared-store key is
+created; raw addresses are never sent to Upstash. Set `RATE_LIMIT_KEY_SECRET` to
+an independent, stable deployment secret if desired. Otherwise a configured
+Upstash token supplies the key, while local-only mode uses a per-process key.
 Set `TRUST_PROXY=true` only behind a trusted proxy that replaces forwarded client
 addresses. Set `TRUST_CLOUDFLARE=true` only when Cloudflare is the trusted edge.
 Vercel's platform headers are recognized automatically.
+
+Each origin rate-limit check is one atomic Upstash command. A drafting browser
+polls every three seconds, so the upper-bound estimate is about 20 commands per
+active draft minute before the short one-second public edge cache combines
+simultaneous requests for the same draft. Setup and username discovery add roughly
+one command each, and the daily cached player snapshot normally reaches origin
+only on an edge miss. Persisting an upstream 429 circuit break costs one additional
+command. Monitor Upstash command totals together with route 429, protection 503,
+and Sleeper 429 counts. If the shared store is unavailable, upstream-backed routes
+return a safe protection error; a single-instance deployment can deliberately
+fall back to the bounded in-memory store by removing both Upstash variables.
 
 Deploy as a standard Next.js application:
 
@@ -108,9 +129,30 @@ npm start
 
 Keep `E2E_FIXTURES` unset in deployed environments. Fixture mode additionally
 checks `NODE_ENV` and is unavailable in production even if the flag is present.
-The app sends clickjacking, content-sniffing, referrer, and device-permission
-security headers. Add a deployment-specific Content Security Policy only after
-including the exact Supabase and hCaptcha origins used by that deployment.
+The app disables the framework banner and sends clickjacking, content-sniffing,
+referrer, device-permission, and Content Security Policy headers. The policy
+automatically includes the configured HTTPS Supabase origin and hCaptcha origins.
+Production builds also send HSTS; local development does not.
+
+Snapshot refresh workflows use only Node built-ins, pin official GitHub actions
+to reviewed commit SHAs, serialize runs, and open a pull request instead of
+pushing to the selected base branch. A manual `workflow_dispatch` therefore
+requires permission to create a branch and pull request in the repository, and
+targets the branch selected when the workflow is started.
+
+### Dependency audit status
+
+As of July 26, 2026, `npm audit --omit=dev` reports three high findings in the
+production tree: Next is marked through its pinned PostCSS dependency and its
+supported Sharp range. The latest published Next 16.2.12 package still declares
+PostCSS 8.4.31 exactly and Sharp `^0.34.5`; the audited fixed releases fall outside
+those declared ranges, while npm's suggested automatic fix is an unsafe downgrade
+to Next 9.3.3. The full audit reports 12 high findings: those three production
+entries plus nine entries in the development-only ESLint/configuration chain,
+whose suggested fixes are also incompatible major changes or invalid downgrades.
+No advisory is suppressed and no unsupported override is applied. Re-run both
+audits during release monitoring and upgrade when the upstream packages publish
+compatible dependency sets.
 
 ## Verification
 

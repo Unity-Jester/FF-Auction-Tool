@@ -5,7 +5,10 @@ import { createSleeperProjectionProvider } from "@/integrations/projections/slee
 import type { ProjectionSnapshotData } from "@/integrations/projections/types";
 import { fixtureProjectionSnapshot } from "@/testing/e2e-fixtures";
 
-const cacheControl = "public, s-maxage=21600, stale-while-revalidate=86400";
+const freshCacheControl =
+  "public, s-maxage=21600, stale-while-revalidate=86400";
+const staleCacheControl =
+  "public, s-maxage=300, stale-while-revalidate=900";
 
 export function createProjectionsHandler(provider = createSleeperProjectionProvider({
   season: new Date().getUTCFullYear(),
@@ -23,7 +26,13 @@ export function createProjectionsHandler(provider = createSleeperProjectionProvi
     }
     try {
       const snapshot = await provider.load();
-      return NextResponse.json(snapshot, { headers: { "Cache-Control": cacheControl } });
+      return NextResponse.json(snapshot, {
+        headers: {
+          "Cache-Control": snapshot.stale
+            ? staleCacheControl
+            : freshCacheControl,
+        },
+      });
     } catch {
       return NextResponse.json({ error: { code: "PROJECTIONS_UNAVAILABLE", message: "Projections are temporarily unavailable" } }, { status: 503, headers: { "Cache-Control": "no-store" } });
     }

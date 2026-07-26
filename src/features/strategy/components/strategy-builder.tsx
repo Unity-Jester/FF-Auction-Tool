@@ -6,14 +6,23 @@ import { useRouter } from "next/navigation";
 import type { LeagueConfig, Position } from "@/domain/league/types";
 import type { PlayerPreference, StrategyConfig } from "@/domain/strategy/types";
 import { parseProjectionCsv } from "@/integrations/projections/csv-provider";
+import {
+  CSV_MATCH_LIMIT_ERROR,
+  MAX_CSV_FILE_BYTES,
+} from "@/integrations/projections/csv-limits";
 import type {
   CsvProjectionResult,
   ProjectionPlayer,
 } from "@/integrations/projections/types";
 import { parsePublicAccountConfig } from "@/integrations/supabase/config";
-import { browserStrategyStorage } from "@/persistence/browser-strategy-repository";
-import type { SavedStrategy } from "@/persistence/saved-strategy-repository";
-import { repositoryForCurrentSession } from "@/persistence/strategy-repository-selector";
+import {
+  BrowserStrategyRepository,
+  browserStrategyStorage,
+} from "@/persistence/browser-strategy-repository";
+import type {
+  SavedStrategy,
+  SavedStrategyRepository,
+} from "@/persistence/saved-strategy-repository";
 import { loadSession, saveSession } from "@/persistence/session-storage";
 import { defaultStrategy } from "../default-strategies";
 
@@ -56,6 +65,7 @@ export function StrategyBuilder({
     id?: string;
   } | null>(null);
   const accountEpoch = useRef(0);
+  const accountAccessEnabled = useRef(false);
   const config = useMemo(
     () =>
       parsePublicAccountConfig({
@@ -67,13 +77,25 @@ export function StrategyBuilder({
     [],
   );
 
-  const getRepository = () =>
-    repositoryForCurrentSession(config ?? {}, browserStrategyStorage());
+  const getRepository = async (
+    allowAccount = accountAccessEnabled.current,
+  ): Promise<SavedStrategyRepository> => {
+    const storage = browserStrategyStorage();
+    if (!allowAccount) {
+      return new BrowserStrategyRepository(storage);
+    }
+    const { repositoryForCurrentSession } = await import(
+      "@/persistence/strategy-repository-selector"
+    );
+    return repositoryForCurrentSession(config ?? {}, storage);
+  };
 
-  const refreshSaved = async () => {
+  const refreshSaved = async (
+    allowAccount = accountAccessEnabled.current,
+  ) => {
     const epoch = accountEpoch.current;
     try {
-      const repository = await getRepository();
+      const repository = await getRepository(allowAccount);
       const records = await repository.list();
       if (epoch !== accountEpoch.current) return;
       setSavedStrategies(records);
@@ -87,8 +109,13 @@ export function StrategyBuilder({
   };
 
   useEffect(() => {
-    const initialRefresh = window.setTimeout(() => void refreshSaved(), 0);
+    const initialRefresh = window.setTimeout(
+      () => void refreshSaved(false),
+      0,
+    );
     const onAuthChange = () => {
+      window.clearTimeout(initialRefresh);
+      accountAccessEnabled.current = true;
       accountEpoch.current += 1;
       setSavedId(null);
       setSavedCreatedAt(null);
@@ -97,7 +124,7 @@ export function StrategyBuilder({
       setMutationPending(null);
       setSaveMessage("");
       setSaveError("");
-      void refreshSaved();
+      void refreshSaved(true);
     };
     window.addEventListener("strategy-auth-change", onAuthChange);
     return () => {
@@ -248,6 +275,15 @@ export function StrategyBuilder({
     setCsvPending(true);
     setCsvError("");
     setCsvResult(null);
+    if (file.size > MAX_CSV_FILE_BYTES) {
+      setCsvProjectionOverrides([]);
+      setCsvError(
+        "The CSV exceeds the 1 MB file limit. Choose a smaller file.",
+      );
+      setCsvPending(false);
+      event.target.value = "";
+      return;
+    }
     try {
       const response = await fetch("/api/sleeper/players");
       if (!response.ok) throw new Error("players");
@@ -257,7 +293,11 @@ export function StrategyBuilder({
       if (!Array.isArray(payload.players)) throw new Error("players");
       const result = parseProjectionCsv(await file.text(), payload.players);
       setCsvResult(result);
-      setCsvProjectionOverrides(result.matched);
+      const overMatchLimit = result.unsupported.some(
+        (row) => row.reason === CSV_MATCH_LIMIT_ERROR,
+      );
+      setCsvProjectionOverrides(overMatchLimit ? [] : result.matched);
+      if (overMatchLimit) setCsvError(CSV_MATCH_LIMIT_ERROR);
     } catch {
       setCsvProjectionOverrides([]);
       setCsvError(

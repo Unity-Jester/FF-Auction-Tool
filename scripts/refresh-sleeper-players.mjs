@@ -9,6 +9,8 @@ const supportedPositions = ["QB", "RB", "WR", "TE", "K", "DEF"];
 const supported = new Set(supportedPositions);
 const minimumOffensivePlayers = 500;
 const maximumBytes = 1_000_000;
+const maximumResponseBytes = 25 * 1024 * 1024;
+const requestTimeoutMs = 15_000;
 
 function cleanText(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
@@ -114,12 +116,53 @@ async function checkSnapshot() {
 }
 
 async function refreshSnapshot() {
-  const response = await fetch(sourceUrl, { method: "GET" });
-  if (!response.ok)
-    throw new Error(
-      `Sleeper player refresh failed with HTTP ${response.status}`,
-    );
-  const players = normalizePlayerMap(await response.json());
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
+  let response;
+  try {
+    response = await fetch(sourceUrl, {
+      method: "GET",
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new Error(
+        `Sleeper player refresh failed with HTTP ${response.status}`,
+      );
+    }
+    const declaredLength = response.headers.get("content-length");
+    if (
+      declaredLength !== null &&
+      Number.isFinite(Number(declaredLength)) &&
+      Number(declaredLength) > maximumResponseBytes
+    ) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error("Sleeper player response exceeds the byte limit");
+    }
+    if (!response.body) throw new Error("Sleeper player response has no body");
+    const reader = response.body.getReader();
+    const chunks = [];
+    let total = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maximumResponseBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new Error("Sleeper player response exceeds the byte limit");
+      }
+      chunks.push(value);
+    }
+    const bytes = Buffer.allocUnsafe(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    response = JSON.parse(bytes.toString("utf8"));
+  } finally {
+    clearTimeout(timeout);
+  }
+  const players = normalizePlayerMap(response);
   const serialized = validateSnapshot(players);
   let previous = null;
   try {

@@ -2,6 +2,7 @@ import type { DraftPurchase } from "@/domain/draft/types";
 import type { Position } from "@/domain/league/types";
 import type { PlayerProjection } from "@/domain/players/types";
 import type { PlayerPreference, StrategyConfig } from "@/domain/strategy/types";
+import { MAX_CSV_MATCHED_OVERRIDES } from "@/integrations/projections/csv-limits";
 
 export type StoredSessionV1 = {
   version: 1;
@@ -21,7 +22,7 @@ export const SESSION_LIMITS = {
   maxBytes: 1_000_000,
   maxPreferences: 500,
   maxCorrections: 500,
-  maxCsvProjections: 2_000,
+  maxCsvProjections: MAX_CSV_MATCHED_OVERRIDES,
   maxRecordKeys: 500,
   maxStringLength: 256,
   maxCurveEntries: 64,

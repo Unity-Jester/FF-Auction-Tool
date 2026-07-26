@@ -1,3 +1,4 @@
+import { createHmac, randomBytes } from "node:crypto";
 import { isIP } from "node:net";
 
 export type RateLimitDecision = {
@@ -11,9 +12,18 @@ export type RateLimitIncrement = {
   retryAfterSeconds: number;
 };
 
+type AtomicRateLimitIncrement = RateLimitIncrement & {
+  blockedUntil: number | null;
+};
+
 export interface RateLimitStore {
   increment(key: string, windowMs: number): Promise<RateLimitIncrement>;
   getBlockedUntil(): Promise<number | null>;
+  incrementUnlessBlocked?(
+    key: string,
+    windowMs: number,
+    now: number,
+  ): Promise<AtomicRateLimitIncrement>;
   setBlockedUntil(timestamp: number, ttlMs: number): Promise<void>;
   readonly size?: number;
 }
@@ -55,6 +65,24 @@ export function createInMemoryRateLimitStore(
   }
 
   return {
+    async incrementUnlessBlocked(
+      key: string,
+      windowMs: number,
+      currentTime: number,
+    ): Promise<AtomicRateLimitIncrement> {
+      if (blockedUntil > currentTime) {
+        return {
+          blockedUntil,
+          count: 0,
+          retryAfterSeconds: Math.max(
+            1,
+            Math.ceil((blockedUntil - currentTime) / 1_000),
+          ),
+        };
+      }
+      const increment = await this.increment(key, windowMs);
+      return { ...increment, blockedUntil: null };
+    },
     async increment(
       key: string,
       windowMs: number,
@@ -109,6 +137,8 @@ type UpstashOptions = {
 
 const incrementScript =
   "local count=redis.call('INCR',KEYS[1]); if count==1 then redis.call('PEXPIRE',KEYS[1],ARGV[1]) end; local ttl=redis.call('PTTL',KEYS[1]); return {count,ttl}";
+const checkScript =
+  "local blocked=tonumber(redis.call('GET',KEYS[1]) or '0'); local now=tonumber(ARGV[2]); if blocked>now then return {blocked,0,blocked-now} end; local count=redis.call('INCR',KEYS[2]); if count==1 then redis.call('PEXPIRE',KEYS[2],ARGV[1]) end; local ttl=redis.call('PTTL',KEYS[2]); return {0,count,ttl}";
 const blockScript =
   "local current=tonumber(redis.call('GET',KEYS[1]) or '0'); local requested=tonumber(ARGV[1]); if requested>current then redis.call('SET',KEYS[1],requested,'PX',ARGV[2]); return requested end; return current";
 
@@ -138,6 +168,39 @@ export function createUpstashRateLimitStore(
   }
 
   return {
+    async incrementUnlessBlocked(
+      key: string,
+      windowMs: number,
+      now: number,
+    ): Promise<AtomicRateLimitIncrement> {
+      const result = await command<
+        [number, number, number] | [number, number]
+      >([
+        "EVAL",
+        checkScript,
+        "2",
+        "sleeper:blocked-until",
+        `sleeper:rate:${key}`,
+        String(windowMs),
+        String(now),
+      ]);
+      const legacyResult = result.length === 2;
+      const blockedUntil = legacyResult ? 0 : Number(result[0]);
+      const count = Number(result[legacyResult ? 0 : 1]);
+      const ttlMs = Number(result[legacyResult ? 1 : 2]);
+      if (
+        !Number.isFinite(blockedUntil) ||
+        !Number.isFinite(count) ||
+        !Number.isFinite(ttlMs)
+      ) {
+        throw new Error("Shared rate-limit store returned malformed data");
+      }
+      return {
+        blockedUntil: blockedUntil > now ? blockedUntil : null,
+        count,
+        retryAfterSeconds: Math.max(1, Math.ceil(ttlMs / 1_000)),
+      };
+    },
     async increment(
       key: string,
       windowMs: number,
@@ -203,6 +266,33 @@ export function createRateLimiter(
     async check(key: string): Promise<RateLimitDecision> {
       try {
         const currentTime = now();
+        if (store.incrementUnlessBlocked) {
+          const increment = await store.incrementUnlessBlocked(
+            key,
+            windowMs,
+            currentTime,
+          );
+          if (
+            increment.blockedUntil !== null &&
+            increment.blockedUntil > currentTime
+          ) {
+            return {
+              allowed: false,
+              retryAfterSeconds: Math.max(
+                1,
+                Math.ceil(
+                  (increment.blockedUntil - currentTime) / 1_000,
+                ),
+              ),
+            };
+          }
+          return increment.count > limit
+            ? {
+                allowed: false,
+                retryAfterSeconds: increment.retryAfterSeconds,
+              }
+            : { allowed: true };
+        }
         const blockedUntil = await store.getBlockedUntil();
         if (blockedUntil !== null && blockedUntil > currentTime) {
           return {
@@ -252,23 +342,35 @@ function cleanIp(value: string | null): string | null {
   return first;
 }
 
+const processRateLimitKey = randomBytes(32).toString("hex");
+
+function nonemptySecret(value: string | undefined): string | undefined {
+  return value?.trim() || undefined;
+}
+
 export function requestClientKey(
   request: Request,
   options: {
     environment?: Record<string, string | undefined>;
+    keySecret?: string;
   } = {},
 ): string {
   const environment = options.environment ?? process.env;
+  let ip: string | null = null;
   if (environment.VERCEL === "1") {
-    return cleanIp(request.headers.get("x-vercel-forwarded-for")) ?? "global";
+    ip = cleanIp(request.headers.get("x-vercel-forwarded-for"));
+  } else if (environment.TRUST_CLOUDFLARE === "true") {
+    ip = cleanIp(request.headers.get("cf-connecting-ip"));
+  } else if (environment.TRUST_PROXY === "true") {
+    ip = cleanIp(request.headers.get("x-forwarded-for"));
   }
-  if (environment.TRUST_CLOUDFLARE === "true") {
-    return cleanIp(request.headers.get("cf-connecting-ip")) ?? "global";
-  }
-  if (environment.TRUST_PROXY === "true") {
-    return cleanIp(request.headers.get("x-forwarded-for")) ?? "global";
-  }
-  return "global";
+  if (!ip) return "global";
+  const secret =
+    nonemptySecret(options.keySecret) ??
+    nonemptySecret(environment.RATE_LIMIT_KEY_SECRET) ??
+    nonemptySecret(environment.UPSTASH_REDIS_REST_TOKEN) ??
+    processRateLimitKey;
+  return `client:${createHmac("sha256", secret).update(ip).digest("hex")}`;
 }
 
 export function createRateLimitStoreFromEnv(

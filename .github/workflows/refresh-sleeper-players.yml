@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
   group: repository-snapshot-refresh-${{ github.repository }}
@@ -15,22 +16,34 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
       - name: Refresh compact player snapshot
         run: node scripts/refresh-sleeper-players.mjs
       - name: Validate compact player snapshot
         run: node scripts/refresh-sleeper-players.mjs --check
-      - name: Commit changed snapshot
+      - name: Open a pull request for a changed snapshot
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           if git diff --quiet -- data/sleeper/players.json; then
+            echo "Sleeper player snapshot is unchanged." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
+          branch="automation/sleeper-players-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git switch -c "$branch"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data/sleeper/players.json
           git commit -m "chore: refresh Sleeper player snapshot"
-          git push
+          git push --set-upstream origin "$branch"
+          pr_url="$(gh pr create \
+            --base "$GITHUB_REF_NAME" \
+            --head "$branch" \
+            --title "chore: refresh Sleeper player snapshot" \
+            --body "Automated compact player snapshot refresh. Review unexpected source or schema changes before merging.")"
+          echo "Opened snapshot pull request: $pr_url" >> "$GITHUB_STEP_SUMMARY"

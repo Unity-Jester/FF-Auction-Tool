@@ -112,12 +112,19 @@ export function createUserDraftsHandler(
 
     try {
       const [user, nflState] = await Promise.all([
-        client.getUser(username, { next: { revalidate: 2 } }),
-        client.getNflState({ next: { revalidate: 300 } }),
+        client.getUser(username, {
+          next: { revalidate: 2 },
+          signal: request.signal,
+        }),
+        client.getNflState({
+          next: { revalidate: 300 },
+          signal: request.signal,
+        }),
       ]);
       const season = String(nflState.season);
       const drafts = await client.getUserDrafts(String(user.user_id), season, {
         next: { revalidate: 2 },
+        signal: request.signal,
       });
       const validDrafts = [];
       const quarantinedDrafts: Array<{

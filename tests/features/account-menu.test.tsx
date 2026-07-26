@@ -74,7 +74,10 @@ describe("AccountMenu", () => {
     );
     expect(screen.getByLabelText("Sleeper username or draft link")).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "Account" }));
-    await user.type(screen.getByLabelText("Email address"), "person@example.com");
+    await user.type(
+      await screen.findByLabelText("Email address"),
+      "person@example.com",
+    );
     expect(screen.getByRole("button", { name: "Email me a sign-in link" }))
       .toBeDisabled();
     await user.click(screen.getByRole("button", { name: "Complete CAPTCHA" }));

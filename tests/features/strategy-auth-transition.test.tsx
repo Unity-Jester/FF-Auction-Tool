@@ -49,6 +49,7 @@ describe("StrategyBuilder auth transitions", () => {
       });
 
     render(<StrategyBuilder draftId="123456789012345678" league={league} />);
+    act(() => window.dispatchEvent(new Event("strategy-auth-change")));
     await waitFor(() => expect(repositoryForCurrentSession).toHaveBeenCalledTimes(1));
     act(() => window.dispatchEvent(new Event("strategy-auth-change")));
     await waitFor(() => expect(repositoryForCurrentSession).toHaveBeenCalledTimes(2));
@@ -85,6 +86,7 @@ describe("StrategyBuilder auth transitions", () => {
     });
     const user = userEvent.setup();
     render(<StrategyBuilder draftId="123456789012345678" league={league} />);
+    act(() => window.dispatchEvent(new Event("strategy-auth-change")));
     await screen.findByText("Existing plan");
     await user.type(screen.getByLabelText("Saved strategy name"), "New plan");
     await user.click(screen.getByRole("button", { name: "Save named strategy" }));
@@ -112,6 +114,7 @@ describe("StrategyBuilder auth transitions", () => {
       });
     const user = userEvent.setup();
     render(<StrategyBuilder draftId="123456789012345678" league={league} />);
+    act(() => window.dispatchEvent(new Event("strategy-auth-change")));
     await waitFor(() => expect(repositoryForCurrentSession).toHaveBeenCalledTimes(1));
     await user.type(screen.getByLabelText("Saved strategy name"), "Old account plan");
     await user.click(screen.getByRole("button", { name: "Save named strategy" }));
@@ -143,6 +146,7 @@ describe("StrategyBuilder auth transitions", () => {
     });
     const user = userEvent.setup();
     render(<StrategyBuilder draftId="123456789012345678" league={league} />);
+    act(() => window.dispatchEvent(new Event("strategy-auth-change")));
     await screen.findByText("Existing plan");
     await user.click(screen.getByRole("button", { name: "Remove Existing plan" }));
 
@@ -170,6 +174,7 @@ describe("StrategyBuilder auth transitions", () => {
       ],
     });
     render(<StrategyBuilder draftId="123456789012345678" league={league} />);
+    act(() => window.dispatchEvent(new Event("strategy-auth-change")));
 
     expect(await screen.findByText("Valid cloud plan")).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent(
@@ -187,6 +192,7 @@ describe("StrategyBuilder auth transitions", () => {
     });
     const user = userEvent.setup();
     render(<StrategyBuilder draftId="123456789012345678" league={league} />);
+    act(() => window.dispatchEvent(new Event("strategy-auth-change")));
     await user.type(screen.getByLabelText("Saved strategy name"), "Plan 51");
     await user.click(screen.getByRole("button", { name: "Save named strategy" }));
 

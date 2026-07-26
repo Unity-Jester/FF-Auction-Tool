@@ -716,6 +716,22 @@ describe("Sleeper rate limiter", () => {
       if (command[0] === "GET") {
         return new Response(JSON.stringify({ result: blockedUntil }));
       }
+      if (
+        command[0] === "EVAL" &&
+        String(command[1]).includes("blocked=tonumber")
+      ) {
+        if (blockedUntil) {
+          return new Response(
+            JSON.stringify({
+              result: [Number(blockedUntil), 0, Number(blockedUntil)],
+            }),
+          );
+        }
+        count += 1;
+        return new Response(
+          JSON.stringify({ result: [0, count, 60_000] }),
+        );
+      }
       if (command[0] === "EVAL" && String(command[1]).includes("INCR")) {
         count += 1;
         return new Response(JSON.stringify({ result: [count, 60_000] }));
@@ -769,24 +785,31 @@ describe("Sleeper rate limiter", () => {
       "x-vercel-forwarded-for": "2001:db8::1, 10.0.0.1",
       "x-forwarded-for": "198.51.100.99",
     };
-    expect(
-      requestClientKey(
-        new Request("http://localhost", { headers: mixedHeaders }),
-        { environment: { VERCEL: "1", TRUST_CLOUDFLARE: "true" } },
-      ),
-    ).toBe("2001:db8::1");
-    expect(
-      requestClientKey(
-        new Request("http://localhost", { headers: mixedHeaders }),
-        { environment: { TRUST_CLOUDFLARE: "true" } },
-      ),
-    ).toBe("203.0.113.4");
-    expect(
-      requestClientKey(
-        new Request("http://localhost", { headers: mixedHeaders }),
-        { environment: { TRUST_PROXY: "true" } },
-      ),
-    ).toBe("198.51.100.99");
+    const vercel = requestClientKey(
+      new Request("http://localhost", { headers: mixedHeaders }),
+      {
+        environment: { VERCEL: "1", TRUST_CLOUDFLARE: "true" },
+        keySecret: "test-secret",
+      },
+    );
+    const cloudflare = requestClientKey(
+      new Request("http://localhost", { headers: mixedHeaders }),
+      {
+        environment: { TRUST_CLOUDFLARE: "true" },
+        keySecret: "test-secret",
+      },
+    );
+    const proxy = requestClientKey(
+      new Request("http://localhost", { headers: mixedHeaders }),
+      {
+        environment: { TRUST_PROXY: "true" },
+        keySecret: "test-secret",
+      },
+    );
+    expect(vercel).toMatch(/^client:[a-f0-9]{64}$/);
+    expect(cloudflare).toMatch(/^client:[a-f0-9]{64}$/);
+    expect(proxy).toMatch(/^client:[a-f0-9]{64}$/);
+    expect(new Set([vercel, cloudflare, proxy]).size).toBe(3);
     expect(
       requestClientKey(
         new Request("http://localhost", { headers: mixedHeaders }),

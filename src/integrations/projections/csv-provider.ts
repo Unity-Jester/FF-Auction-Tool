@@ -3,10 +3,14 @@ import Papa from "papaparse";
 import type { PlayerProjection, ProjectionStats } from "@/domain/players/types";
 
 import { matchProjectionPlayer, normalizePosition } from "./match-player";
+import {
+  CSV_MATCH_LIMIT_ERROR,
+  MAX_CSV_FILE_BYTES,
+  MAX_CSV_MATCHED_OVERRIDES,
+  MAX_CSV_ROWS,
+} from "./csv-limits";
 import type { CsvProjectionResult, CsvProjectionRow, ProjectionPlayer } from "./types";
 
-const maximumCsvBytes = 1_000_000;
-const maximumRows = 5_000;
 const supportedStats = {
   pass_yd: "passYards", pass_td: "passTds", pass_int: "interceptions",
   rush_yd: "rushYards", rush_td: "rushTds", rec: "receptions",
@@ -29,13 +33,13 @@ function safeStat(value: unknown): number | undefined {
 
 export function parseProjectionCsv(csv: string, players: readonly ProjectionPlayer[]): CsvProjectionResult {
   const result: CsvProjectionResult = { matched: [], unmatched: [], ambiguous: [], duplicates: [], unsupported: [] };
-  if (typeof csv !== "string" || new TextEncoder().encode(csv).byteLength > maximumCsvBytes) {
+  if (typeof csv !== "string" || new TextEncoder().encode(csv).byteLength > MAX_CSV_FILE_BYTES) {
     result.unsupported.push({ sourceName: "", reason: "CSV exceeds the 1 MB limit" });
     return result;
   }
   const parsed = Papa.parse<Record<string, unknown>>(csv, { header: true, skipEmptyLines: "greedy", transformHeader: (header) => header.trim().toLowerCase() });
-  if (parsed.errors.length || parsed.data.length > maximumRows) {
-    result.unsupported.push({ sourceName: "", reason: parsed.data.length > maximumRows ? "CSV exceeds the 5,000 row limit" : "CSV could not be parsed" });
+  if (parsed.errors.length || parsed.data.length > MAX_CSV_ROWS) {
+    result.unsupported.push({ sourceName: "", reason: parsed.data.length > MAX_CSV_ROWS ? "CSV exceeds the 5,000 row limit" : "CSV could not be parsed" });
     return result;
   }
   const headers = Object.keys(parsed.meta.fields ? Object.fromEntries(parsed.meta.fields.map((field) => [field, true])) : {});
@@ -65,6 +69,9 @@ export function parseProjectionCsv(csv: string, players: readonly ProjectionPlay
   for (const matches of pending.values()) {
     if (matches.length === 1) result.matched.push(matches[0].projection);
     else result.duplicates.push(...matches.map(({ info }) => ({ ...info, reason: "Multiple CSV rows resolve to this player" })));
+  }
+  if (result.matched.length > MAX_CSV_MATCHED_OVERRIDES) {
+    result.unsupported.push({ sourceName: "", reason: CSV_MATCH_LIMIT_ERROR });
   }
   return result;
 }
