@@ -21,9 +21,11 @@ const scoringFields = [
 export function LeagueReview({
   draftId,
   league,
+  importedLeague = league,
 }: {
   draftId: string;
   league: LeagueConfig;
+  importedLeague?: LeagueConfig;
 }) {
   const router = useRouter();
   const [values, setValues] = useState(() => ({
@@ -99,7 +101,7 @@ export function LeagueReview({
         },
         capKickerDefenseAtOne: values.cap,
       });
-      saveLeagueConfig(draftId, next);
+      saveLeagueConfig(draftId, next, importedLeague);
       router.push(`/draft/${draftId}/strategy`);
     } catch (reason) {
       setError(

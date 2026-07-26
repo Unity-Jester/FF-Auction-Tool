@@ -222,7 +222,7 @@ describe("session storage", () => {
     const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new DOMException("full", "QuotaExceededError");
     });
-    expect(() => saveSession({ version: 1, draftId: "draft-1", strategy, preferences: {}, localCorrections: [], csvProjectionOverrides: [], savedAt: "2026-07-25T12:00:00.000Z" })).not.toThrow();
+    expect(saveSession({ version: 1, draftId: "draft-1", strategy, preferences: {}, localCorrections: [], csvProjectionOverrides: [], savedAt: "2026-07-25T12:00:00.000Z" })).toEqual({ ok: false, reason: "STORAGE" });
     setItem.mockRestore();
     localStorage.setItem(sessionStorageKey("draft-1"), "one");
     localStorage.setItem(sessionStorageKey("draft-2"), "two");

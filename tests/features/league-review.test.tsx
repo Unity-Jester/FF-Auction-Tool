@@ -6,7 +6,9 @@ import { createLeagueConfig } from "@/domain/league/defaults";
 import { LeagueReview } from "@/features/setup/components/league-review";
 import {
   loadLeagueConfig,
+  leagueSetupStatus,
   resolveLeagueConfig,
+  saveLeagueConfig,
 } from "@/persistence/league-storage";
 
 const push = vi.fn();
@@ -91,5 +93,22 @@ describe("LeagueReview", () => {
     );
     expect(screen.getByLabelText("Teams")).toHaveValue("10");
     expect(screen.getByLabelText("TE reception bonus")).toHaveValue("1.5");
+  });
+
+  it("distinguishes intentional setup edits from later upstream structural drift", () => {
+    const corrected = { ...league, teams: 10 };
+    saveLeagueConfig("baseline-draft", corrected, league);
+    expect(leagueSetupStatus("baseline-draft", league)).toBe("match");
+    expect(resolveLeagueConfig("baseline-draft", league)).toEqual(corrected);
+
+    const changedUpstream = { ...league, budget: 250 };
+    expect(leagueSetupStatus("baseline-draft", changedUpstream)).toBe("mismatch");
+    expect(resolveLeagueConfig("baseline-draft", changedUpstream)).toEqual(corrected);
+  });
+
+  it("treats legacy setup records conservatively", () => {
+    localStorage.setItem("sleeper-auction-companion:league:legacy-draft", JSON.stringify({ version: 1, league }));
+    expect(leagueSetupStatus("legacy-draft", league)).toBe("legacy");
+    expect(resolveLeagueConfig("legacy-draft", league)).toEqual(league);
   });
 });

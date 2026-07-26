@@ -137,6 +137,40 @@ describe("DraftRoomView", () => {
     expect(screen.getByText(/no valid saved strategy/i)).toBeInTheDocument();
   });
 
+  it("warns that an in-memory correction was not saved across reload", () => {
+    render(<DraftRoomView model={model()} onRetry={vi.fn()} storageFailure />);
+    expect(screen.getByText(/could not save draft changes/i)).toBeInTheDocument();
+    expect(screen.getByText(/may not persist/i)).toBeInTheDocument();
+  });
+
+  it("returns focus to the correction invoker after cancel", async () => {
+    const user = userEvent.setup();
+    render(<DraftRoomView model={model()} onRetry={vi.fn()} onAddCorrection={vi.fn()} />);
+    const trigger = screen.getByRole("button", { name: "Add local purchase correction" });
+    await user.click(trigger);
+    await user.click(screen.getByRole("button", { name: "Cancel correction" }));
+    expect(screen.getByRole("button", { name: "Add local purchase correction" })).toHaveFocus();
+  });
+
+  it("moves focus to the Now tab when a saved correction removes its invoker", async () => {
+    const user = userEvent.setup();
+    const rerenderRef: { current?: ReturnType<typeof render>["rerender"] } = {};
+    const view = render(<DraftRoomView
+      model={model()}
+      onRetry={vi.fn()}
+      onAddCorrection={() => rerenderRef.current?.(<DraftRoomView
+        model={model({ players: model().players.filter((player) => player.id !== "p1"), selectedPlayerId: "p2" })}
+        onRetry={vi.fn()}
+        onAddCorrection={vi.fn()}
+      />)}
+    />);
+    rerenderRef.current = view.rerender;
+    await user.click(screen.getByRole("button", { name: "Add local purchase correction" }));
+    await user.type(screen.getByRole("spinbutton", { name: "Local sale price" }), "10");
+    await user.click(screen.getByRole("button", { name: "Save local correction" }));
+    expect(screen.getByRole("tab", { name: "Now" })).toHaveFocus();
+  });
+
   it("does not introduce a nested main landmark", () => {
     const { container } = render(<DraftRoomView model={model()} onRetry={vi.fn()} />);
     expect(container.querySelector("main")).toBeNull();
@@ -172,11 +206,16 @@ describe("DraftRoomView", () => {
     const save = vi.fn();
     render(<DraftRoomView model={model({ minBid: 2 })} onRetry={vi.fn()} onAddCorrection={save} />);
     await user.click(screen.getByRole("button", { name: "Add local purchase correction" }));
+    expect(screen.getByRole("textbox", { name: "Player" })).toHaveValue("Bijan Robinson");
+    expect(screen.getByRole("textbox", { name: "Player" })).toBeRequired();
+    expect(screen.getByRole("combobox", { name: "Assign to" })).toHaveFocus();
     const amount = screen.getByRole("spinbutton", { name: "Local sale price" });
 
     await user.type(amount, "1");
     await user.click(screen.getByRole("button", { name: "Save local correction" }));
     expect(screen.getByRole("alert")).toHaveTextContent(/minimum bid is \$2/i);
+    expect(amount).toHaveAttribute("aria-invalid", "true");
+    expect(amount).toHaveFocus();
     expect(save).not.toHaveBeenCalled();
 
     await user.clear(amount);

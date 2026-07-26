@@ -226,7 +226,7 @@
   font-size: .8rem;
 }
 .emptyState p { margin: 0; }
-.emptyState a { display: inline-block; margin-top: .45rem; color: var(--color-text); }
+.emptyState a, .notice a { display: inline-block; margin-left: .6rem; color: var(--color-text); }
 .correctionControl { margin-top: .4rem; }
 .correctionControl form { display: flex; margin-top: .5rem; gap: .5rem; align-items: end; }
 .manualCorrection { display: flex; width: 100%; margin: 0; padding: .5rem 0 0; gap: .5rem; border: 0; flex-wrap: wrap; }
@@ -270,8 +270,8 @@
 .recovery h2 { color: #ffc561; }
 .recovery p { max-width: 56rem; }
 .recovery button { margin-left: auto; }
-.helpBackdrop { position: fixed; z-index: 100; inset: 0; display: grid; padding: 1rem; place-items: center; background: rgb(0 0 0 / 65%); }
-.helpDialog { width: min(42rem, 100%); max-height: min(42rem, calc(100svh - 2rem)); overflow: auto; padding: 1.25rem; border: 1px solid var(--color-line); border-radius: var(--radius); background: var(--color-surface-raised); box-shadow: 0 1rem 4rem rgb(0 0 0 / 50%); }
+.helpDialog { width: min(42rem, calc(100% - 2rem)); max-height: min(42rem, calc(100svh - 2rem)); overflow: auto; padding: 1.25rem; border: 1px solid var(--color-line); border-radius: var(--radius); background: var(--color-surface-raised); color: var(--color-text); box-shadow: 0 1rem 4rem rgb(0 0 0 / 50%); }
+.helpDialog::backdrop { background: rgb(0 0 0 / 65%); }
 .helpHeading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--color-line); }
 .helpHeading h2 { margin: 0 0 1rem; }
 .helpHeading button { min-height: var(--target-size); border: 0; background: transparent; color: var(--color-text); text-decoration: underline; }
@@ -281,8 +281,21 @@
 @keyframes enter { from { opacity: 0; } }
 
 @media (max-width: 1100px) and (min-width: 768px) {
-  .workspace { grid-template-columns: minmax(30rem, 1fr) minmax(17rem, 20rem); }
-  .leagueRegion { display: none; }
+  .workspace {
+    height: auto;
+    min-height: calc(100svh - 4.25rem);
+    grid-template-columns: minmax(28rem, 1fr) minmax(17rem, 20rem);
+    grid-template-rows: auto minmax(30rem, 1fr) auto;
+  }
+  .teamRegion { grid-row: 1 / 3; }
+  .leagueRegion {
+    display: block;
+    max-height: 32rem;
+    grid-column: 1 / -1;
+    grid-row: 3;
+    border-top: 1px solid var(--color-line);
+    border-left: 0;
+  }
 }
 @media (max-width: 767px) {
   .topbar { position: static; padding: .65rem .75rem; }

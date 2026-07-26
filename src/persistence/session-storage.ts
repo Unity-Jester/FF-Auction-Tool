@@ -167,14 +167,19 @@ export function loadSession(draftId: string): StoredSessionV1 | null {
   } catch { return null; }
 }
 
-export function saveSession(session: StoredSessionV1): void {
+export type SessionSaveResult = { ok: true } | { ok: false; reason: "INVALID" | "TOO_LARGE" | "STORAGE" };
+
+export function saveSession(session: StoredSessionV1): SessionSaveResult {
   const valid = validateV1(session);
-  if (!valid) return;
+  if (!valid) return { ok: false, reason: "INVALID" };
   try {
     const raw = JSON.stringify(valid);
-    if (new TextEncoder().encode(raw).byteLength > SESSION_LIMITS.maxBytes) return;
-    storage()?.setItem(sessionStorageKey(valid.draftId), raw);
-  } catch { /* Browser storage is optional. */ }
+    if (new TextEncoder().encode(raw).byteLength > SESSION_LIMITS.maxBytes) return { ok: false, reason: "TOO_LARGE" };
+    const target = storage();
+    if (!target) return { ok: false, reason: "STORAGE" };
+    target.setItem(sessionStorageKey(valid.draftId), raw);
+    return { ok: true };
+  } catch { return { ok: false, reason: "STORAGE" }; }
 }
 
 export function clearSession(draftId: string): void {

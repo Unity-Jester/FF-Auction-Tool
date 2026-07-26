@@ -32,23 +32,24 @@ export default function SetupPage({
   });
   if (query.isPending)
     return (
-      <main className="stage">
+      <section className="stage" aria-label="Draft setup">
         <p className="kicker">Connecting to Sleeper…</p>
-      </main>
+      </section>
     );
   if (query.isError)
     return (
-      <main className="stage">
+      <section className="stage" aria-label="Draft setup">
         <h1>We couldn’t open that auction.</h1>
         <p>{query.error.message}</p>
-      </main>
+      </section>
     );
   return (
-    <main className="stage">
+    <section className="stage" aria-label="Draft setup">
       <LeagueReview
         draftId={draftId}
         league={resolveLeagueConfig(draftId, query.data.league)}
+        importedLeague={query.data.league}
       />
-    </main>
+    </section>
   );
 }

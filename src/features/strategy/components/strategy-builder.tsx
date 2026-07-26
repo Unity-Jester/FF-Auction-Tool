@@ -210,7 +210,7 @@ export function StrategyBuilder({
   };
   const enter = () => {
     if (!valid) return;
-    saveSession({
+    const saved = saveSession({
       ...savedSession,
       version: 1,
       draftId,
@@ -223,6 +223,10 @@ export function StrategyBuilder({
       csvProjectionOverrides: savedSession?.csvProjectionOverrides ?? [],
       savedAt: new Date().toISOString(),
     });
+    if (!saved.ok) {
+      setSaveError("This browser could not save your draft plan. Check storage access, then try again.");
+      return;
+    }
     router.push(`/draft/${draftId}`);
   };
   return (

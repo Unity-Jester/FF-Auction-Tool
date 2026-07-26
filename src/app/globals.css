@@ -65,7 +65,7 @@ button {
 
 .skip-link {
   position: fixed;
-  z-index: 10;
+  z-index: 1000;
   top: var(--space-3);
   left: var(--space-3);
   transform: translateY(-200%);
@@ -130,5 +130,22 @@ button {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
+  }
+}
+
+@media (forced-colors: active) {
+  :root {
+    --color-focus: Highlight;
+    --color-line: CanvasText;
+    --color-accent: Highlight;
+    --color-accent-text: LinkText;
+    --color-accent-ink: HighlightText;
+  }
+
+  button,
+  input,
+  select,
+  dialog {
+    border: 1px solid ButtonText;
   }
 }

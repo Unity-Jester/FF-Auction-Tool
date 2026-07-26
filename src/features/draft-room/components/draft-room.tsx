@@ -2,13 +2,13 @@
 
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import type { DraftPurchase, DraftSnapshot } from "@/domain/draft/types";
 import { defaultStrategy } from "@/features/strategy/default-strategies";
 import { reconcileDraft } from "@/features/draft-session/reconcile";
 import { useDraftSync } from "@/features/draft-session/use-draft-sync";
-import { resolveLeagueConfig } from "@/persistence/league-storage";
+import { leagueSetupStatus, resolveLeagueConfig } from "@/persistence/league-storage";
 import { loadSession, saveSession, type StoredSessionV1 } from "@/persistence/session-storage";
 import type { ProjectionSnapshot } from "@/integrations/projections/types";
 import { buildDraftRoomViewModel, type DraftRoomViewModel, type PlayerSnapshot } from "../model";
@@ -52,6 +52,7 @@ export function DraftRoomView({
   onAddCorrection,
   onChangeRoster,
   syncError,
+  storageFailure = false,
 }: {
   model: DraftRoomViewModel;
   onRetry: () => void;
@@ -60,6 +61,7 @@ export function DraftRoomView({
   onAddCorrection?: (playerId: string, rosterId: number, amount: number) => void;
   onChangeRoster?: () => void;
   syncError?: unknown;
+  storageFailure?: boolean;
 }) {
   const [selectedPlayerId, setSelectedPlayerId] = useState(model.selectedPlayerId);
   const [tab, setTab] = useState<Tab>("now");
@@ -67,6 +69,10 @@ export function DraftRoomView({
   const [correctionTeam, setCorrectionTeam] = useState(String(model.selectedRosterId));
   const [correctionAmount, setCorrectionAmount] = useState("");
   const [correctionError, setCorrectionError] = useState<string | null>(null);
+  const correctionInvoker = useRef<HTMLElement | null>(null);
+  const correctionReturnId = useRef<string | null>(null);
+  const correctionTeamRef = useRef<HTMLSelectElement>(null);
+  const correctionAmountRef = useRef<HTMLInputElement>(null);
   const isMobile = useMobileLayout();
   const effectiveSelectedPlayerId = model.players.some((player) => player.id === selectedPlayerId)
     ? selectedPlayerId
@@ -81,6 +87,8 @@ export function DraftRoomView({
     .flatMap((team) => team.players.map((player) => ({ team, player })))
     .find(({ player }) => player.id === correctionPlayerId);
   const openCorrection = useCallback((playerId: string) => {
+    correctionInvoker.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    correctionReturnId.current = playerId;
     const existing = model.teams
       .flatMap((team) => team.players.map((player) => ({ team, player })))
       .find(({ player }) => player.id === playerId);
@@ -92,10 +100,21 @@ export function DraftRoomView({
     setCorrectionError(null);
     setTab("now");
   }, [model.selectedRosterId, model.teams]);
+  useEffect(() => {
+    if (correctionPlayerId) correctionTeamRef.current?.focus();
+  }, [correctionPlayerId]);
   const closeCorrection = () => {
     setCorrectionPlayerId(null);
     setCorrectionAmount("");
     setCorrectionError(null);
+    queueMicrotask(() => {
+      const fallback = correctionReturnId.current
+        ? document.getElementById(`correction-trigger-${correctionReturnId.current}`)
+        : null;
+      (correctionInvoker.current?.isConnected
+        ? correctionInvoker.current
+        : fallback ?? document.getElementById("draft-tab-now"))?.focus();
+    });
   };
   const selectedCorrectionTeam = model.teams.find(
     (team) => team.rosterId === Number(correctionTeam),
@@ -167,8 +186,12 @@ export function DraftRoomView({
         </p>
       )}
       {model.syncStatus !== "fresh" && <RecoveryPanel code={recoveryCode(syncError)} lastUpdatedAt={model.lastUpdatedAt} />}
+      {storageFailure && <RecoveryPanel code="STORAGE" lastUpdatedAt={model.lastUpdatedAt} />}
       {model.configurationNotice && (
-        <p className={styles.notice} role="status">{model.configurationNotice}</p>
+        <div className={styles.notice} role="status">
+          {model.configurationNotice}
+          {model.reviewSetupRequired && <Link href={`/draft/${model.draftId}/setup`}>Review setup</Link>}
+        </div>
       )}
       {model.dataWarnings.map((warning) => (
         <p key={warning} className={styles.notice} role="status">{warning}</p>
@@ -200,7 +223,7 @@ export function DraftRoomView({
           />
           {selected && onAddCorrection && model.draftStatus !== "complete" && correctionPlayerId === null && (
             <div className={styles.correctionControl}>
-              <button className={styles.criticalAction} type="button" onClick={() => openCorrection(selected.id)}>
+              <button id={`correction-trigger-${selected.id}`} className={styles.criticalAction} type="button" onClick={() => openCorrection(selected.id)}>
                 Add local purchase correction
               </button>
             </div>
@@ -213,12 +236,16 @@ export function DraftRoomView({
                 const amount = Number(correctionAmount);
                 if (correctionCapacityError) {
                   setCorrectionError(correctionCapacityError);
+                  queueMicrotask(() => correctionTeamRef.current?.focus());
                 } else if (!Number.isSafeInteger(amount)) {
                   setCorrectionError("Enter a whole-dollar sale price.");
+                  queueMicrotask(() => correctionAmountRef.current?.focus());
                 } else if (amount < model.minBid) {
                   setCorrectionError(`The minimum bid is $${model.minBid}.`);
+                  queueMicrotask(() => correctionAmountRef.current?.focus());
                 } else if (amount > correctionMaximum) {
                   setCorrectionError(`The maximum legal price is $${Math.max(0, correctionMaximum)}.`);
+                  queueMicrotask(() => correctionAmountRef.current?.focus());
                 } else {
                   onAddCorrection(correctionPlayerId, Number(correctionTeam), amount);
                   closeCorrection();
@@ -226,7 +253,7 @@ export function DraftRoomView({
               }}>
                 <ManualCorrection playerName={existingPurchase?.player.name ?? selected?.name ?? "selected player"}>
                 <label>Assign to
-                  <select aria-label="Assign to" value={correctionTeam} onChange={(event) => {
+                  <select ref={correctionTeamRef} aria-label="Assign to" aria-invalid={Boolean(correctionCapacityError)} aria-describedby={correctionCapacityError ? "correction-error" : undefined} required value={correctionTeam} onChange={(event) => {
                     setCorrectionTeam(event.target.value);
                     setCorrectionError(null);
                   }}>
@@ -234,7 +261,7 @@ export function DraftRoomView({
                   </select>
                 </label>
                 <label>Sale price
-                  <input aria-label="Local sale price" type="number" min={model.minBid} required value={correctionAmount} onChange={(event) => {
+                  <input ref={correctionAmountRef} aria-label="Local sale price" aria-invalid={Boolean(correctionError && !correctionCapacityError)} aria-describedby={correctionError ? "correction-error" : undefined} type="number" min={model.minBid} required value={correctionAmount} onChange={(event) => {
                     setCorrectionAmount(event.target.value);
                     setCorrectionError(null);
                   }} />
@@ -243,7 +270,7 @@ export function DraftRoomView({
                 </ManualCorrection>
               </form>
               {(correctionCapacityError || correctionError) && (
-                <p className={styles.correctionError} role="alert">
+                <p id="correction-error" className={styles.correctionError} role="alert">
                   {correctionCapacityError ?? correctionError}
                 </p>
               )}
@@ -323,6 +350,7 @@ export function DraftRoom({ draftId }: { draftId: string }) {
     } catch { return null; }
   });
   const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
+  const [storageFailure, setStorageFailure] = useState(false);
   const reconciled = useMemo(() => {
     if (!sync.data) return null;
     return reconcileDraft(
@@ -333,8 +361,11 @@ export function DraftRoom({ draftId }: { draftId: string }) {
   useEffect(() => {
     if (!session || !reconciled || reconciled.localCorrections === session.localCorrections) return;
     const next = { ...session, localCorrections: reconciled.localCorrections, savedAt: new Date().toISOString() };
-    saveSession(next);
-    const update = window.setTimeout(() => setSession(next), 0);
+    const saved = saveSession(next);
+    const update = window.setTimeout(() => {
+      if (!saved.ok) setStorageFailure(true);
+      setSession(next);
+    }, 0);
     return () => window.clearTimeout(update);
   }, [reconciled, session]);
   const validRoster = rosterId !== null && sync.data?.teams.some((team) => team.rosterId === rosterId);
@@ -371,15 +402,20 @@ export function DraftRoom({ draftId }: { draftId: string }) {
     ...valuationModel,
     syncStatus: sync.syncStatus,
     lastUpdatedAt: sync.lastUpdatedAt,
-    configurationNotice: session
-      ? null
-      : "Using a recommended plan because no valid saved strategy was found.",
+    configurationNotice:
+      sync.data && ["mismatch", "legacy"].includes(leagueSetupStatus(draftId, sync.data.league))
+        ? "Sleeper league settings changed, or this saved setup predates structural checks. Review setup before relying on values."
+        : session
+          ? null
+          : "Using a recommended plan because no valid saved strategy was found.",
+    reviewSetupRequired:
+      Boolean(sync.data) && ["mismatch", "legacy"].includes(leagueSetupStatus(draftId, sync.data!.league)),
     selectedPlayerId:
       selectedPlayerId &&
       valuationModel.players.some((player) => player.id === selectedPlayerId)
         ? selectedPlayerId
         : valuationModel.selectedPlayerId,
-  } : null, [selectedPlayerId, session, sync.lastUpdatedAt, sync.syncStatus, valuationModel]);
+  } : null, [draftId, selectedPlayerId, session, sync.data, sync.lastUpdatedAt, sync.syncStatus, valuationModel]);
   if (!sync.data && sync.syncStatus === "offline") {
     return <section className={styles.blocking}><h1>Draft is unavailable.</h1><RecoveryPanel code={recoveryCode(sync.error)} lastUpdatedAt={null} onRetry={() => sync.retry()} /></section>;
   }
@@ -403,13 +439,15 @@ export function DraftRoom({ draftId }: { draftId: string }) {
       localCorrections: [], csvProjectionOverrides: [], savedAt: new Date().toISOString(),
     };
     const next = { ...active, localCorrections, savedAt: new Date().toISOString() };
-    saveSession(next);
+    const saved = saveSession(next);
+    setStorageFailure(!saved.ok);
     setSession(next);
   };
   return <DraftRoomView
     model={model}
     onRetry={() => sync.retry()}
     syncError={sync.error}
+    storageFailure={storageFailure}
     onSelectPlayer={setSelectedPlayerId}
     onChangeRoster={() => {
       try { localStorage.removeItem(rosterKey(draftId)); } catch {}

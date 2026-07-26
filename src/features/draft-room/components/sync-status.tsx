@@ -20,9 +20,9 @@ export function SyncStatus({
       }).format(new Date(lastUpdatedAt))
     : "Never";
   return (
-    <div className={styles.sync} aria-live="polite">
+    <div className={styles.sync}>
       <span className={styles[status]} aria-hidden="true" />
-      <strong>{label}</strong>
+      <strong role="status" aria-live="polite" aria-atomic="true">{label}</strong>
       <span>Updated {updated}</span>
       {status !== "fresh" && (
         <button className={styles.criticalAction} type="button" onClick={onRetry}>Retry sync</button>

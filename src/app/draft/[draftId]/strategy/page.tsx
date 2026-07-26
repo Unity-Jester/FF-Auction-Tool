@@ -31,23 +31,23 @@ export default function StrategyPage({
   });
   if (query.isPending)
     return (
-      <main className="stage">
+      <section className="stage" aria-label="Draft strategy">
         <p className="kicker">Loading strategy…</p>
-      </main>
+      </section>
     );
   if (query.isError)
     return (
-      <main className="stage">
+      <section className="stage" aria-label="Draft strategy">
         <h1>We couldn’t load this league.</h1>
         <p>{query.error.message}</p>
-      </main>
+      </section>
     );
   return (
-    <main className="stage">
+    <section className="stage" aria-label="Draft strategy">
       <StrategyBuilder
         draftId={draftId}
         league={resolveLeagueConfig(draftId, query.data.league)}
       />
-    </main>
+    </section>
   );
 }
