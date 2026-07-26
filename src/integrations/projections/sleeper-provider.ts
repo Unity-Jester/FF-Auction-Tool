@@ -2,7 +2,7 @@ import type { Position } from "@/domain/league/types";
 import type { PlayerProjection, ProjectionStats } from "@/domain/players/types";
 
 import { normalizePosition } from "./match-player";
-import type { ProjectionSnapshot } from "./types";
+import type { ProjectionSnapshot, ProjectionSnapshotData } from "./types";
 
 export const SLEEPER_PROJECTION_SOURCE = "Sleeper season projections";
 const statMap = {
@@ -62,7 +62,7 @@ export function normalizeSleeperProjections(payload: unknown, updatedAt: string)
   return [...byId.values()].sort((a, b) => a.playerId.localeCompare(b.playerId, undefined, { numeric: true }));
 }
 
-export function validateProjectionSnapshot(snapshot: ProjectionSnapshot, minimumOffensivePlayers = 100): ProjectionSnapshot {
+export function validateProjectionSnapshot(snapshot: ProjectionSnapshotData, minimumOffensivePlayers = 100): ProjectionSnapshotData {
   if (!snapshot || !Array.isArray(snapshot.projections) || !safeText(snapshot.source) || !Number.isFinite(Date.parse(snapshot.updatedAt))) throw new Error("Invalid projection snapshot");
   const ids = new Set<string>();
   let offensive = 0;
@@ -77,7 +77,7 @@ export function validateProjectionSnapshot(snapshot: ProjectionSnapshot, minimum
 
 export function createSleeperProjectionProvider(options: {
   season: number;
-  fallback: ProjectionSnapshot;
+  fallback: ProjectionSnapshotData;
   fetcher?: (url: string) => Promise<unknown>;
 }) {
   const fetcher = options.fetcher ?? (async (url: string) => {
@@ -91,7 +91,7 @@ export function createSleeperProjectionProvider(options: {
         const updatedAt = new Date().toISOString();
         const payload = await fetcher(`https://api.sleeper.com/projections/nfl/${options.season}?season_type=regular`);
         const projections = normalizeSleeperProjections(payload, updatedAt);
-        return validateProjectionSnapshot({ source: SLEEPER_PROJECTION_SOURCE, updatedAt, projections });
+        return { ...validateProjectionSnapshot({ source: SLEEPER_PROJECTION_SOURCE, updatedAt, projections }), stale: false };
       } catch {
         validateProjectionSnapshot(options.fallback, 1);
         return { ...options.fallback, stale: true };

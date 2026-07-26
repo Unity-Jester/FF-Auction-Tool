@@ -12,6 +12,7 @@ import type { ProjectionSnapshot } from "@/integrations/projections/types";
 const lastKnownSnapshot: ProjectionSnapshot = {
   source: "Sleeper season projections (checked-in fallback)",
   updatedAt: "2026-07-20T00:00:00.000Z",
+  stale: false,
   projections: [
     {
       playerId: "4046",
@@ -26,6 +27,21 @@ const lastKnownSnapshot: ProjectionSnapshot = {
 };
 
 describe("Sleeper projection provider", () => {
+  it("marks a validated upstream snapshot as fresh", async () => {
+    const provider = createSleeperProjectionProvider({
+      season: 2026,
+      fallback: lastKnownSnapshot,
+      fetcher: async () => Array.from({ length: 100 }, (_, index) => ({
+        player_id: String(index),
+        full_name: `Player ${index}`,
+        team: "BUF",
+        position: "QB",
+        stats: { pass_yd: 3000 },
+      })),
+    });
+    await expect(provider.load()).resolves.toMatchObject({ stale: false });
+  });
+
   it("normalizes the current Sleeper projection response shape", () => {
     const normalized = normalizeSleeperProjections(
       {

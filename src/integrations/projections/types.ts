@@ -5,8 +5,10 @@ export type ProjectionSnapshot = {
   source: string;
   updatedAt: string;
   projections: PlayerProjection[];
-  stale?: boolean;
+  stale: boolean;
 };
+
+export type ProjectionSnapshotData = Omit<ProjectionSnapshot, "stale">;
 
 export type ProjectionPlayer = Pick<PlayerProjection, "playerId" | "name" | "team"> & {
   positions: readonly Position[];
