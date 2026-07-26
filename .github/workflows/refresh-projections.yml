@@ -2,10 +2,13 @@ name: Refresh projections
 on:
   workflow_dispatch:
   schedule:
-    - cron: "17 9 * 7,8 *"
-    - cron: "17 9 * 1-6,9-12 1"
+    - cron: "47 9 * 7,8 *"
+    - cron: "47 9 * 1-6,9-12 1"
 permissions:
   contents: write
+concurrency:
+  group: repository-snapshot-refresh-${{ github.repository }}
+  cancel-in-progress: false
 jobs:
   refresh:
     runs-on: ubuntu-latest
