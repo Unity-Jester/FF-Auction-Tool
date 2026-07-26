@@ -14,7 +14,7 @@ const strategy: StrategyConfig = {
   name: "Balanced",
   archetype: "balanced",
   starterBudgetShare: 0.7,
-  positionBudgets: { QB: 0.1, RB: 0.3, WR: 0.3, TE: 0.1, K: 0.1, DEF: 0.1 },
+  positionBudgets: { QB: 20, RB: 60, WR: 60, TE: 20, K: 1, DEF: 1 },
   spendingCurve: [0.4, 0.6],
   qbApproach: "auto",
   teApproach: "auto",
@@ -132,6 +132,34 @@ describe("session storage", () => {
       JSON.stringify(session({ localCorrections: [foreignCorrection] })),
     );
     expect(loadSession("draft-1")).toBeNull();
+  });
+
+  it("rejects decimal and unsafe monetary and draft numeric fields", () => {
+    saveSession(session({ strategy: { ...strategy, minReserve: 1.5 } }));
+    expect(localStorage.getItem(sessionStorageKey("draft-1"))).toBeNull();
+
+    saveSession(session({ strategy: { ...strategy, positionBudgets: { ...strategy.positionBudgets, QB: 20.5 } } }));
+    expect(localStorage.getItem(sessionStorageKey("draft-1"))).toBeNull();
+
+    const correction = {
+      draftId: "draft-1",
+      playerId: "player-1",
+      rosterId: 1,
+      amount: 20,
+      pickNo: 1,
+      createdAt: null,
+      source: "local",
+      keeper: false,
+    };
+    for (const invalid of [
+      { ...correction, amount: 20.5 },
+      { ...correction, amount: Number.MAX_SAFE_INTEGER + 1 },
+      { ...correction, rosterId: Number.MAX_SAFE_INTEGER + 1 },
+      { ...correction, pickNo: Number.MAX_SAFE_INTEGER + 1 },
+    ]) {
+      saveSession(session({ localCorrections: [invalid] }));
+      expect(localStorage.getItem(sessionStorageKey("draft-1"))).toBeNull();
+    }
   });
 
   it("bounds collection counts, record keys, string lengths, and stored JSON bytes", () => {

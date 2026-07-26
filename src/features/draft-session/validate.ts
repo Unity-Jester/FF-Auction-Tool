@@ -5,15 +5,17 @@ import type { DraftSnapshot } from "@/domain/draft/types";
 const identifier = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const timestamp = z.string().refine((value) => Number.isFinite(Date.parse(value)));
 const finite = z.number().finite();
+const positiveSafeInteger = z.number().safe().positive();
+const nonnegativeSafeInteger = z.number().safe().nonnegative();
 const position = z.enum(["QB", "RB", "WR", "TE", "K", "DEF"]);
 const positionCounts = z
   .object({
-    QB: z.number().int().nonnegative(),
-    RB: z.number().int().nonnegative(),
-    WR: z.number().int().nonnegative(),
-    TE: z.number().int().nonnegative(),
-    K: z.number().int().nonnegative(),
-    DEF: z.number().int().nonnegative(),
+    QB: nonnegativeSafeInteger,
+    RB: nonnegativeSafeInteger,
+    WR: nonnegativeSafeInteger,
+    TE: nonnegativeSafeInteger,
+    K: nonnegativeSafeInteger,
+    DEF: nonnegativeSafeInteger,
   })
   .strict();
 
@@ -34,16 +36,16 @@ const scoring = z
 
 const league = z
   .object({
-    teams: z.number().int().positive(),
-    budget: finite.positive(),
-    minBid: finite.positive(),
+    teams: positiveSafeInteger,
+    budget: positiveSafeInteger,
+    minBid: positiveSafeInteger,
     starters: positionCounts,
-    bench: z.number().int().nonnegative(),
-    rosterSize: z.number().int().positive(),
+    bench: nonnegativeSafeInteger,
+    rosterSize: positiveSafeInteger,
     flex: z.array(
       z
         .object({
-          count: z.number().int().positive(),
+          count: positiveSafeInteger,
           eligible: z.array(position).min(1),
         })
         .strict(),
@@ -55,10 +57,10 @@ const league = z
 
 const team = z
   .object({
-    rosterId: z.number().int().positive(),
+    rosterId: positiveSafeInteger,
     name: z.string().min(1).max(256),
-    remainingBudget: finite.nonnegative(),
-    openSlots: z.number().int().nonnegative(),
+    remainingBudget: nonnegativeSafeInteger,
+    openSlots: nonnegativeSafeInteger,
     playerIds: z.array(identifier),
   })
   .strict();
@@ -67,9 +69,9 @@ const purchase = z
   .object({
     draftId: identifier,
     playerId: identifier,
-    rosterId: z.number().int().positive(),
-    amount: finite.positive(),
-    pickNo: z.number().int().positive(),
+    rosterId: positiveSafeInteger,
+    amount: positiveSafeInteger,
+    pickNo: positiveSafeInteger,
     createdAt: timestamp.nullable(),
     source: z.literal("sleeper"),
     keeper: z.boolean(),
@@ -86,7 +88,18 @@ const snapshotSchema = z
     purchases: z.array(purchase),
     lastUpdatedAt: timestamp,
   })
-  .strict();
+  .strict()
+  .superRefine((snapshot, context) => {
+    snapshot.purchases.forEach((item, index) => {
+      if (item.amount < snapshot.league.minBid) {
+        context.addIssue({
+          code: "custom",
+          message: "Purchase is below the league minimum bid",
+          path: ["purchases", index, "amount"],
+        });
+      }
+    });
+  });
 
 export class InvalidDraftResponseError extends Error {
   constructor() {

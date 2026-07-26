@@ -177,6 +177,36 @@ describe("normalizeDraft", () => {
     expect(result.quarantinedPicks).toHaveLength(1);
   });
 
+  it("quarantines decimal and unsafe auction amounts", () => {
+    const result = normalizeDraft({
+      draft: auctionDraft,
+      picks: [
+        {
+          draft_id: auctionDraft.draft_id,
+          player_id: "4046",
+          roster_id: 3,
+          draft_slot: 3,
+          pick_no: 1,
+          metadata: { amount: "42.5" },
+        },
+        {
+          draft_id: auctionDraft.draft_id,
+          player_id: "4047",
+          roster_id: 4,
+          draft_slot: 4,
+          pick_no: 2,
+          metadata: { amount: String(Number.MAX_SAFE_INTEGER + 1) },
+        },
+      ],
+    });
+
+    expect(result.snapshot.purchases).toEqual([]);
+    expect(result.quarantinedPicks.map(({ reason }) => reason)).toEqual([
+      "INVALID_AMOUNT",
+      "INVALID_AMOUNT",
+    ]);
+  });
+
   it("deduplicates exact picks and quarantines conflicting duplicates", () => {
     const basePick = {
       draft_id: auctionDraft.draft_id,

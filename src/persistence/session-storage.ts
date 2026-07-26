@@ -62,6 +62,10 @@ function finite(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
+function safeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value);
+}
+
 function date(value: unknown): value is string {
   return string(value) && Number.isFinite(Date.parse(value));
 }
@@ -98,7 +102,7 @@ function numericRecord(
 
 function strategy(value: unknown): StrategyConfig | null {
   const record = object(value);
-  if (!record || !onlyKeys(record, ["id", "name", "archetype", "starterBudgetShare", "positionBudgets", "spendingCurve", "qbApproach", "teApproach", "rbBuild", "minReserve", "preferences", "projectionOverrides", "valueOverrides"]) || !identifier(record.id) || !string(record.name) || !finite(record.starterBudgetShare) || record.starterBudgetShare < 0 || record.starterBudgetShare > 1 || !finite(record.minReserve) || record.minReserve < 0 || record.minReserve > SESSION_LIMITS.maxNumber) return null;
+  if (!record || !onlyKeys(record, ["id", "name", "archetype", "starterBudgetShare", "positionBudgets", "spendingCurve", "qbApproach", "teApproach", "rbBuild", "minReserve", "preferences", "projectionOverrides", "valueOverrides"]) || !identifier(record.id) || !string(record.name) || !finite(record.starterBudgetShare) || record.starterBudgetShare < 0 || record.starterBudgetShare > 1 || !safeInteger(record.minReserve) || record.minReserve < 0 || record.minReserve > SESSION_LIMITS.maxNumber) return null;
   if (!(["recommended", "balanced", "stars-and-scrubs", "custom"] as const).includes(record.archetype as StrategyConfig["archetype"])) return null;
   if (!(["auto", "elite", "value"] as const).includes(record.qbApproach as StrategyConfig["qbApproach"])) return null;
   if (!(["auto", "elite", "value"] as const).includes(record.teApproach as StrategyConfig["teApproach"])) return null;
@@ -107,7 +111,7 @@ function strategy(value: unknown): StrategyConfig | null {
   const preferenceValues = preferenceRecord(record.preferences);
   const projectionOverrides = numericRecord(record.projectionOverrides);
   const valueOverrides = numericRecord(record.valueOverrides, { nonnegative: true });
-  if (!positionBudgets || Object.keys(positionBudgets).length !== positions.length || !positions.every((position) => finite(positionBudgets[position])) || !preferenceValues || !projectionOverrides || !valueOverrides || !Array.isArray(record.spendingCurve) || record.spendingCurve.length > SESSION_LIMITS.maxCurveEntries || !record.spendingCurve.every((entry) => finite(entry) && entry >= 0 && entry <= SESSION_LIMITS.maxNumber)) return null;
+  if (!positionBudgets || Object.keys(positionBudgets).length !== positions.length || !positions.every((position) => safeInteger(positionBudgets[position])) || !preferenceValues || !projectionOverrides || !valueOverrides || !Array.isArray(record.spendingCurve) || record.spendingCurve.length > SESSION_LIMITS.maxCurveEntries || !record.spendingCurve.every((entry) => finite(entry) && entry >= 0 && entry <= SESSION_LIMITS.maxNumber)) return null;
   return { id: record.id, name: record.name, archetype: record.archetype as StrategyConfig["archetype"], starterBudgetShare: record.starterBudgetShare, positionBudgets: positionBudgets as Record<Position, number>, spendingCurve: [...record.spendingCurve], qbApproach: record.qbApproach as StrategyConfig["qbApproach"], teApproach: record.teApproach as StrategyConfig["teApproach"], rbBuild: record.rbBuild as StrategyConfig["rbBuild"], minReserve: record.minReserve, preferences: preferenceValues, projectionOverrides, valueOverrides };
 }
 
@@ -117,7 +121,7 @@ function purchase(
   draftId: string,
 ): DraftPurchase | null {
   const record = object(value);
-  if (!record || !onlyKeys(record, ["draftId", "playerId", "rosterId", "amount", "pickNo", "createdAt", "source", "keeper"]) || record.draftId !== draftId || !identifier(record.draftId) || !identifier(record.playerId) || !Number.isInteger(record.rosterId) || (record.rosterId as number) < 1 || !finite(record.amount) || (record.amount as number) <= 0 || (record.amount as number) > SESSION_LIMITS.maxNumber || !Number.isInteger(record.pickNo) || (record.pickNo as number) < 1 || (record.pickNo as number) > SESSION_LIMITS.maxNumber || record.source !== source || typeof record.keeper !== "boolean" || !(record.createdAt === null || date(record.createdAt))) return null;
+  if (!record || !onlyKeys(record, ["draftId", "playerId", "rosterId", "amount", "pickNo", "createdAt", "source", "keeper"]) || record.draftId !== draftId || !identifier(record.draftId) || !identifier(record.playerId) || !safeInteger(record.rosterId) || record.rosterId < 1 || !safeInteger(record.amount) || record.amount < 1 || record.amount > SESSION_LIMITS.maxNumber || !safeInteger(record.pickNo) || record.pickNo < 1 || record.pickNo > SESSION_LIMITS.maxNumber || record.source !== source || typeof record.keeper !== "boolean" || !(record.createdAt === null || date(record.createdAt))) return null;
   return record as unknown as DraftPurchase;
 }
 

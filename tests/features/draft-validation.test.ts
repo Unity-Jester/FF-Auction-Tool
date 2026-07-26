@@ -50,4 +50,18 @@ describe("draft response validation", () => {
       "invalid draft response",
     );
   });
+
+  it.each([
+    ["decimal league budget", { ...snapshot, league: { ...snapshot.league, budget: 200.5 } }],
+    ["unsafe minimum bid", { ...snapshot, league: { ...snapshot.league, minBid: Number.MAX_SAFE_INTEGER + 1 } }],
+    ["decimal remaining budget", { ...snapshot, teams: [{ ...snapshot.teams[0], remainingBudget: 199.5 }] }],
+    ["unsafe roster ID", { ...snapshot, teams: [{ ...snapshot.teams[0], rosterId: Number.MAX_SAFE_INTEGER + 1 }] }],
+    ["decimal purchase amount", { ...snapshot, purchases: [{ draftId: "draft-1", playerId: "player-1", rosterId: 1, amount: 1.5, pickNo: 1, createdAt: null, source: "sleeper", keeper: false }] }],
+    ["purchase below minimum bid", { ...snapshot, league: { ...snapshot.league, minBid: 2 }, purchases: [{ draftId: "draft-1", playerId: "player-1", rosterId: 1, amount: 1, pickNo: 1, createdAt: null, source: "sleeper", keeper: false }] }],
+    ["unsafe pick number", { ...snapshot, purchases: [{ draftId: "draft-1", playerId: "player-1", rosterId: 1, amount: 20, pickNo: Number.MAX_SAFE_INTEGER + 1, createdAt: null, source: "sleeper", keeper: false }] }],
+  ])("rejects non-integer monetary or numeric domain data: %s", (_name, malformed) => {
+    expect(() => parseDraftSnapshot(malformed, "draft-1")).toThrow(
+      "invalid draft response",
+    );
+  });
 });

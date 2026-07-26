@@ -33,6 +33,16 @@ function wrapper({ children }: { children: ReactNode }) {
 
 afterEach(() => vi.restoreAllMocks());
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("useDraftSync", () => {
   it("polls active drafts every three seconds and stops completed drafts", async () => {
     vi.useFakeTimers();
@@ -140,5 +150,54 @@ describe("useDraftSync", () => {
     const fetcher = vi.fn();
     renderHook(() => useDraftSync("not valid", fetcher), { wrapper });
     expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("isolates failure backoff when an older draft request finishes after a switch", async () => {
+    vi.useFakeTimers();
+    const oldDraft = deferred<unknown>();
+    let newDraftCalls = 0;
+    const fetcher = vi.fn((draftId: string) => {
+      if (draftId === "draft-1") return oldDraft.promise;
+      newDraftCalls += 1;
+      return Promise.reject(new Error("offline"));
+    });
+    const { result, rerender } = renderHook(
+      ({ draftId }) => useDraftSync(draftId, fetcher),
+      { initialProps: { draftId: "draft-1" }, wrapper },
+    );
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    rerender({ draftId: "draft-2" });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(newDraftCalls).toBe(1);
+
+    await act(async () => {
+      oldDraft.resolve(response("drafting"));
+      await Promise.resolve();
+    });
+    expect(result.current.data).toBeUndefined();
+    expect(result.current.syncStatus).toBe("offline");
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_001); });
+    expect(newDraftCalls).toBe(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(9_000); });
+    expect(newDraftCalls).toBe(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_001); });
+    expect(newDraftCalls).toBe(3);
+  });
+
+  it("passes an abort signal and cancels an in-flight request on unmount", async () => {
+    let receivedSignal: AbortSignal | undefined;
+    const fetcher = vi.fn((_draftId: string, signal?: AbortSignal) => {
+      receivedSignal = signal;
+      return new Promise<unknown>(() => undefined);
+    });
+    const { unmount } = renderHook(() => useDraftSync("draft-1", fetcher), {
+      wrapper,
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(receivedSignal).toBeInstanceOf(AbortSignal);
+    unmount();
+    expect(receivedSignal?.aborted).toBe(true);
   });
 });

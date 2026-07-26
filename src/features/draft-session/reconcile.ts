@@ -27,17 +27,18 @@ function validPurchase(
   value: DraftPurchase,
   source: DraftPurchase["source"],
   draftId: string,
+  minBid: number,
 ) {
   return (
     value.source === source &&
     value.draftId === draftId &&
     identifier(value.draftId) &&
     identifier(value.playerId) &&
-    Number.isInteger(value.rosterId) &&
+    Number.isSafeInteger(value.rosterId) &&
     value.rosterId > 0 &&
-    Number.isFinite(value.amount) &&
-    value.amount > 0 &&
-    Number.isInteger(value.pickNo) &&
+    Number.isSafeInteger(value.amount) &&
+    value.amount >= minBid &&
+    Number.isSafeInteger(value.pickNo) &&
     value.pickNo > 0 &&
     (value.createdAt === null ||
       (typeof value.createdAt === "string" && Number.isFinite(Date.parse(value.createdAt)))) &&
@@ -49,10 +50,11 @@ function canonicalPurchases(
   purchases: DraftPurchase[],
   source: DraftPurchase["source"],
   draftId: string,
+  minBid: number,
 ): DraftPurchase[] {
   const unique = new Map<string, DraftPurchase>();
   for (const purchase of purchases) {
-    if (!validPurchase(purchase, source, draftId)) continue;
+    if (!validPurchase(purchase, source, draftId, minBid)) continue;
     const key = identity(purchase);
     const prior = unique.get(key);
     // A duplicate from the same response is ignored; the first record is stable.
@@ -87,7 +89,9 @@ export function reconcileDraft(
 ): DraftSessionState {
   if (
     !identifier(previous.snapshot.draftId) ||
-    incoming.draftId !== previous.snapshot.draftId
+    incoming.draftId !== previous.snapshot.draftId ||
+    !Number.isSafeInteger(incoming.league?.minBid) ||
+    incoming.league.minBid <= 0
   ) {
     return previous;
   }
@@ -95,11 +99,13 @@ export function reconcileDraft(
     incoming.purchases,
     "sleeper",
     incoming.draftId,
+    incoming.league.minBid,
   );
   const localCorrections = canonicalPurchases(
     previous.localCorrections,
     "local",
     incoming.draftId,
+    incoming.league.minBid,
   ).filter(
     (local) => !purchases.some((authoritative) => exactMatch(local, authoritative)),
   );

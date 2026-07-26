@@ -19,7 +19,7 @@ const snapshot = (purchases: DraftPurchase[]): DraftSnapshot => ({
   draftId: "draft-1",
   status: "drafting",
   type: "auction",
-  league: {} as DraftSnapshot["league"],
+  league: { minBid: 1 } as DraftSnapshot["league"],
   teams: [],
   purchases,
   lastUpdatedAt: "2026-07-25T12:00:00.000Z",
@@ -135,5 +135,24 @@ describe("reconcileDraft", () => {
     );
 
     expect(result.snapshot.purchases).toEqual([purchase()]);
+  });
+
+  it("drops decimal, unsafe, and below-minimum purchase values", () => {
+    const incoming = {
+      ...snapshot([
+        purchase({ playerId: "decimal", amount: 1.5 }),
+        purchase({ playerId: "below-minimum", amount: 1 }),
+        purchase({ playerId: "unsafe-roster", rosterId: Number.MAX_SAFE_INTEGER + 1 }),
+        purchase({ playerId: "unsafe-pick", pickNo: Number.MAX_SAFE_INTEGER + 1 }),
+      ]),
+      league: { minBid: 2 } as DraftSnapshot["league"],
+    };
+
+    expect(
+      reconcileDraft(
+        { snapshot: { ...snapshot([]), league: incoming.league }, localCorrections: [] },
+        incoming,
+      ).snapshot.purchases,
+    ).toEqual([]);
   });
 });

@@ -8,7 +8,10 @@ import { reconcileDraft } from "./reconcile";
 import { parseDraftApiResponse, parseDraftSnapshot } from "./validate";
 
 export type DraftSyncStatus = "fresh" | "stale" | "offline";
-export type DraftFetcher = (draftId: string) => Promise<unknown>;
+export type DraftFetcher = (
+  draftId: string,
+  signal?: AbortSignal,
+) => Promise<unknown>;
 type SyncedDraft = {
   snapshot: DraftSnapshot;
   lastUpdatedAt: string;
@@ -39,8 +42,14 @@ function shareSyncedDraft(previous: unknown, next: unknown): unknown {
 const validDraftId = (draftId: string | null | undefined) =>
   typeof draftId === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(draftId);
 
-async function fetchDraft(draftId: string): Promise<DraftSnapshot> {
-  const response = await fetch(`/api/sleeper/drafts/${encodeURIComponent(draftId)}`);
+async function fetchDraft(
+  draftId: string,
+  signal?: AbortSignal,
+): Promise<DraftSnapshot> {
+  const response = await fetch(
+    `/api/sleeper/drafts/${encodeURIComponent(draftId)}`,
+    { signal },
+  );
   if (!response.ok) throw new Error("Unable to refresh Sleeper draft");
   return parseDraftApiResponse(await response.json(), draftId);
 }
@@ -57,22 +66,23 @@ export function useDraftSync(
   request: DraftFetcher = fetchDraft,
 ) {
   const enabled = validDraftId(draftId);
-  const failures = useRef({ draftId, count: 0 });
+  const failures = useRef(new Map<string, number>());
   const query = useQuery<SyncedDraft>({
     queryKey: ["sleeper-draft", draftId],
-    queryFn: async () => {
-      if (failures.current.draftId !== draftId) {
-        failures.current = { draftId, count: 0 };
-      }
+    queryFn: async ({ signal }) => {
+      const requestedDraftId = draftId as string;
       try {
         const snapshot = parseDraftSnapshot(
-          await request(draftId as string),
-          draftId as string,
+          await request(requestedDraftId, signal),
+          requestedDraftId,
         );
-        failures.current.count = 0;
+        failures.current.set(requestedDraftId, 0);
         return { snapshot, lastUpdatedAt: snapshot.lastUpdatedAt };
       } catch (error) {
-        failures.current.count += 1;
+        failures.current.set(
+          requestedDraftId,
+          (failures.current.get(requestedDraftId) ?? 0) + 1,
+        );
         throw error;
       }
     },
@@ -81,7 +91,7 @@ export function useDraftSync(
     refetchInterval: (current) =>
       interval(
         current.state.data?.snapshot,
-        failures.current.count,
+        failures.current.get(draftId as string) ?? 0,
       ),
     refetchIntervalInBackground: false,
     structuralSharing: shareSyncedDraft,

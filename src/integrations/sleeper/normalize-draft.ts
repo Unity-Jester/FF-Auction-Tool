@@ -74,11 +74,11 @@ function numberSetting(value: unknown, fallback = 0): number {
 
 function strictPositiveAmount(value: unknown): number | null {
   if (typeof value === "number")
-    return Number.isFinite(value) && value > 0 ? value : null;
-  if (typeof value !== "string" || !/^(?:\d+|\d+\.\d+|\.\d+)$/.test(value))
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  if (typeof value !== "string" || !/^\d+$/.test(value))
     return null;
   const amount = Number(value);
-  return Number.isFinite(amount) && amount > 0 ? amount : null;
+  return Number.isSafeInteger(amount) && amount > 0 ? amount : null;
 }
 
 function keeper(topLevel: unknown, metadata: Record<string, unknown>): boolean {
