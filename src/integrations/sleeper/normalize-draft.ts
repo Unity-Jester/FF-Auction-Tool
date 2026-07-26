@@ -8,7 +8,6 @@ import {
   SleeperPickSchema,
   SleeperRosterSchema,
   SleeperUserSchema,
-  type SleeperPlayerMap,
 } from "./schemas";
 
 export class UnsupportedDraftTypeError extends Error {
@@ -30,13 +29,16 @@ export type NormalizedDraft = {
   snapshot: DraftSnapshot;
   teams: SourceTeam[];
   users: Array<ReturnType<typeof SleeperUserSchema.parse>>;
-  players: SleeperPlayerMap;
   quarantinedPicks: QuarantinedPick[];
 };
 
 export type QuarantinedPick = {
   pick: unknown;
-  reason: "INVALID_PICK" | "INVALID_AMOUNT" | "CONFLICTING_DUPLICATE";
+  reason:
+    | "INVALID_PICK"
+    | "INVALID_AMOUNT"
+    | "UNRESOLVED_ROSTER"
+    | "CONFLICTING_DUPLICATE";
 };
 
 type NormalizeInput = {
@@ -45,7 +47,6 @@ type NormalizeInput = {
   league?: unknown;
   users?: unknown[];
   rosters?: unknown[];
-  players?: SleeperPlayerMap;
   now?: Date;
 };
 
@@ -61,52 +62,73 @@ function numberSetting(value: unknown, fallback = 0): number {
 }
 
 function strictPositiveAmount(value: unknown): number | null {
-  if (typeof value === "number") return Number.isFinite(value) && value > 0 ? value : null;
-  if (typeof value !== "string" || !/^(?:\d+|\d+\.\d+|\.\d+)$/.test(value)) return null;
+  if (typeof value === "number")
+    return Number.isFinite(value) && value > 0 ? value : null;
+  if (typeof value !== "string" || !/^(?:\d+|\d+\.\d+|\.\d+)$/.test(value))
+    return null;
   const amount = Number(value);
   return Number.isFinite(amount) && amount > 0 ? amount : null;
 }
 
-function keeper(metadata: Record<string, unknown>): boolean {
-  return [metadata.is_keeper, metadata.keeper].some(
-    (value) => value === true || value === 1 || value === "1" || value === "true",
+function keeper(topLevel: unknown, metadata: Record<string, unknown>): boolean {
+  return [topLevel, metadata.is_keeper, metadata.keeper].some(
+    (value) =>
+      value === true || value === 1 || value === "1" || value === "true",
   );
 }
 
-function rosterCounts(draftSettings: Record<string, unknown>, rosterPositions?: string[]) {
+function rosterCounts(
+  draftSettings: Record<string, unknown>,
+  rosterPositions?: string[],
+) {
   const counts = new Map<string, number>();
-  rosterPositions?.forEach((position) => counts.set(position, (counts.get(position) ?? 0) + 1));
+  rosterPositions?.forEach((position) =>
+    counts.set(position, (counts.get(position) ?? 0) + 1),
+  );
   const from = (position: string, key: string) =>
-    rosterPositions ? (counts.get(position) ?? 0) : numberSetting(draftSettings[key]);
-  return {
-    starters: {
-      QB: from("QB", "slots_qb"),
-      RB: from("RB", "slots_rb"),
-      WR: from("WR", "slots_wr"),
-      TE: from("TE", "slots_te"),
-      K: from("K", "slots_k"),
-      DEF: from("DEF", "slots_def"),
-    },
-    bench: from("BN", "slots_bn"),
-    flex: Object.entries(flexEligible)
-      .map(([name, eligible]) => ({
-        count: rosterPositions
-          ? (counts.get(name) ?? 0)
-          : numberSetting(
-              draftSettings[
-                name === "WRRB_FLEX"
-                  ? "slots_wrrb_flex"
-                  : name === "REC_FLEX"
-                    ? "slots_rec_flex"
-                    : name === "SUPER_FLEX"
-                      ? "slots_super_flex"
-                      : "slots_flex"
-              ],
-            ),
-        eligible,
-      }))
-      .filter((slot) => slot.count > 0),
+    rosterPositions
+      ? (counts.get(position) ?? 0)
+      : numberSetting(draftSettings[key]);
+  const starters = {
+    QB: from("QB", "slots_qb"),
+    RB: from("RB", "slots_rb"),
+    WR: from("WR", "slots_wr"),
+    TE: from("TE", "slots_te"),
+    K: from("K", "slots_k"),
+    DEF: from("DEF", "slots_def"),
   };
+  const flex = Object.entries(flexEligible)
+    .map(([name, eligible]) => ({
+      count: rosterPositions
+        ? (counts.get(name) ?? 0)
+        : numberSetting(
+            draftSettings[
+              name === "WRRB_FLEX"
+                ? "slots_wrrb_flex"
+                : name === "REC_FLEX"
+                  ? "slots_rec_flex"
+                  : name === "SUPER_FLEX"
+                    ? "slots_super_flex"
+                    : "slots_flex"
+            ],
+          ),
+      eligible,
+    }))
+    .filter((slot) => slot.count > 0);
+  const fixedCount = Object.values(starters).reduce(
+    (sum, count) => sum + count,
+    0,
+  );
+  const flexCount = flex.reduce((sum, slot) => sum + slot.count, 0);
+  const hasBench = rosterPositions
+    ? counts.has("BN")
+    : Object.prototype.hasOwnProperty.call(draftSettings, "slots_bn");
+  const rounds = numberSetting(draftSettings.rounds);
+  const bench = hasBench
+    ? from("BN", "slots_bn")
+    : Math.max(0, rounds - fixedCount - flexCount);
+
+  return { starters, bench, flex };
 }
 
 function sourceTeams(
@@ -116,14 +138,24 @@ function sourceTeams(
   rosters: Array<ReturnType<typeof SleeperRosterSchema.parse>>,
 ): SourceTeam[] {
   if (draft.league_id == null) {
-    const nameBySlot = new Map(
-      Object.entries(draft.draft_order ?? {}).map(([name, slot]) => [slot, name]),
+    const userIdBySlot = new Map(
+      Object.entries(draft.draft_order ?? {}).map(([userId, slot]) => [
+        slot,
+        userId,
+      ]),
     );
+    const userById = new Map(users.map((user) => [String(user.user_id), user]));
     return Array.from({ length: teams }, (_, index) => {
       const slot = index + 1;
       const rawRosterId = draft.slot_to_roster_id?.[String(slot)] ?? slot;
       const rosterId = Number(rawRosterId);
-      return { rosterId, userId: null, name: nameBySlot.get(slot) ?? `Team ${rosterId}` };
+      const userId = userIdBySlot.get(slot) ?? null;
+      const user = userId ? userById.get(userId) : undefined;
+      return {
+        rosterId,
+        userId,
+        name: user?.display_name ?? user?.username ?? `Team ${slot}`,
+      };
     });
   }
 
@@ -135,18 +167,26 @@ function sourceTeams(
     const userId = roster?.owner_id == null ? null : String(roster.owner_id);
     const user = userId ? userById.get(userId) : undefined;
     const metadataName =
-      typeof user?.metadata?.team_name === "string" ? user.metadata.team_name : undefined;
+      typeof user?.metadata?.team_name === "string"
+        ? user.metadata.team_name
+        : undefined;
     return {
       rosterId,
       userId,
-      name: metadataName ?? user?.display_name ?? user?.username ?? `Team ${rosterId}`,
+      name:
+        metadataName ??
+        user?.display_name ??
+        user?.username ??
+        `Team ${rosterId}`,
     };
   });
 }
 
 function status(value: string): DraftSnapshot["status"] {
   if (value === "complete") return "complete";
-  if (value === "drafting" || value === "in_progress") return "drafting";
+  if (value === "drafting" || value === "in_progress" || value === "paused") {
+    return "drafting";
+  }
   return "pre";
 }
 
@@ -154,10 +194,18 @@ export function normalizeDraft(input: NormalizeInput): NormalizedDraft {
   const draft = SleeperDraftSchema.parse(input.draft);
   if (draft.type !== "auction") throw new UnsupportedDraftTypeError();
 
-  const league = input.league === undefined ? undefined : SleeperLeagueSchema.parse(input.league);
-  const users = (input.users ?? []).map((user) => SleeperUserSchema.parse(user));
-  const rosters = (input.rosters ?? []).map((roster) => SleeperRosterSchema.parse(roster));
-  const teamCount = league?.total_rosters ?? numberSetting(draft.settings.teams);
+  const league =
+    input.league === undefined
+      ? undefined
+      : SleeperLeagueSchema.parse(input.league);
+  const users = (input.users ?? []).map((user) =>
+    SleeperUserSchema.parse(user),
+  );
+  const rosters = (input.rosters ?? []).map((roster) =>
+    SleeperRosterSchema.parse(roster),
+  );
+  const teamCount =
+    league?.total_rosters ?? numberSetting(draft.settings.teams);
   const budget = numberSetting(draft.settings.budget, 200);
   const slotConfig = rosterCounts(draft.settings, league?.roster_positions);
   const scoring = league?.scoring_settings ?? {};
@@ -177,6 +225,8 @@ export function normalizeDraft(input: NormalizeInput): NormalizedDraft {
       receivingTd: numberSetting(scoring.rec_td, 6),
       fumbleLost: numberSetting(scoring.fum_lost, -2),
       positionReceptionBonus: {
+        RB: numberSetting(scoring.bonus_rec_rb, 0),
+        WR: numberSetting(scoring.bonus_rec_wr, 0),
         TE: numberSetting(scoring.bonus_rec_te, 0),
       },
     },
@@ -201,10 +251,24 @@ export function normalizeDraft(input: NormalizeInput): NormalizedDraft {
       quarantinedPicks.push({ pick: raw, reason: "INVALID_AMOUNT" });
       continue;
     }
+    const mappedRosterId = Number(
+      draft.slot_to_roster_id?.[String(parsed.data.draft_slot)],
+    );
+    const fallbackRosterId =
+      parsed.data.draft_slot <= teamCount ? parsed.data.draft_slot : null;
+    const rosterId =
+      parsed.data.roster_id ??
+      (Number.isInteger(mappedRosterId) && mappedRosterId > 0
+        ? mappedRosterId
+        : fallbackRosterId);
+    if (rosterId === null) {
+      quarantinedPicks.push({ pick: raw, reason: "UNRESOLVED_ROSTER" });
+      continue;
+    }
     const purchase: DraftPurchase = {
       draftId: String(draft.draft_id),
       playerId: String(parsed.data.player_id),
-      rosterId: parsed.data.roster_id,
+      rosterId,
       amount,
       pickNo: parsed.data.pick_no,
       createdAt:
@@ -212,7 +276,7 @@ export function normalizeDraft(input: NormalizeInput): NormalizedDraft {
           ? parsed.data.metadata.created_at
           : null,
       source: "sleeper",
-      keeper: keeper(parsed.data.metadata),
+      keeper: keeper(parsed.data.is_keeper, parsed.data.metadata),
     };
     const key = JSON.stringify([
       purchase.draftId,
@@ -225,20 +289,21 @@ export function normalizeDraft(input: NormalizeInput): NormalizedDraft {
   }
 
   const purchases: DraftPurchase[] = [];
-  [...parsedGroups.entries()]
-    .forEach(([, group]) => {
-      const signatures = new Set(group.map(({ purchase }) => JSON.stringify(purchase)));
-      if (signatures.size > 1) {
-        quarantinedPicks.push(
-          ...group.map(({ raw }) => ({
-            pick: raw,
-            reason: "CONFLICTING_DUPLICATE" as const,
-          })),
-        );
-        return;
-      }
-      purchases.push(group[0].purchase);
-    });
+  [...parsedGroups.entries()].forEach(([, group]) => {
+    const signatures = new Set(
+      group.map(({ purchase }) => JSON.stringify(purchase)),
+    );
+    if (signatures.size > 1) {
+      quarantinedPicks.push(
+        ...group.map(({ raw }) => ({
+          pick: raw,
+          reason: "CONFLICTING_DUPLICATE" as const,
+        })),
+      );
+      return;
+    }
+    purchases.push(group[0].purchase);
+  });
   purchases.sort(
     (a, b) =>
       a.pickNo - b.pickNo ||
@@ -248,11 +313,14 @@ export function normalizeDraft(input: NormalizeInput): NormalizedDraft {
 
   const teamMetadata = sourceTeams(teamCount, draft, users, rosters);
   const snapshotTeams = teamMetadata.map((team) => {
-    const teamPurchases = purchases.filter((purchase) => purchase.rosterId === team.rosterId);
+    const teamPurchases = purchases.filter(
+      (purchase) => purchase.rosterId === team.rosterId,
+    );
     return {
       rosterId: team.rosterId,
       name: team.name,
-      remainingBudget: budget - teamPurchases.reduce((sum, pick) => sum + pick.amount, 0),
+      remainingBudget:
+        budget - teamPurchases.reduce((sum, pick) => sum + pick.amount, 0),
       openSlots: Math.max(0, config.rosterSize - teamPurchases.length),
       playerIds: teamPurchases.map((pick) => pick.playerId),
     };
@@ -270,7 +338,6 @@ export function normalizeDraft(input: NormalizeInput): NormalizedDraft {
     },
     teams: teamMetadata,
     users,
-    players: input.players ?? {},
     quarantinedPicks,
   };
 }

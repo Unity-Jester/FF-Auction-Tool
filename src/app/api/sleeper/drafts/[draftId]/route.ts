@@ -5,24 +5,45 @@ import {
   SleeperError,
   type SleeperRequestOptions,
 } from "@/integrations/sleeper/client";
-import { normalizeDraft, UnsupportedDraftTypeError } from "@/integrations/sleeper/normalize-draft";
+import {
+  normalizeDraft,
+  UnsupportedDraftTypeError,
+} from "@/integrations/sleeper/normalize-draft";
 import { parseDraftReference } from "@/integrations/sleeper/parse-draft-reference";
+import {
+  requestClientKey,
+  sleeperRateLimiter,
+  type RateLimiter,
+} from "@/integrations/sleeper/rate-limiter";
 import type {
   SleeperDraft,
   SleeperLeague,
-  SleeperPlayerMap,
   SleeperRoster,
   SleeperUser,
 } from "@/integrations/sleeper/schemas";
 
 type Context = { params: Promise<{ draftId: string }> };
 type DetailClient = {
-  getDraft(draftId: string, options?: SleeperRequestOptions): Promise<SleeperDraft>;
-  getDraftPicks(draftId: string, options?: SleeperRequestOptions): Promise<unknown[]>;
-  getLeague(leagueId: string, options?: SleeperRequestOptions): Promise<SleeperLeague>;
-  getLeagueUsers(leagueId: string, options?: SleeperRequestOptions): Promise<SleeperUser[]>;
-  getLeagueRosters(leagueId: string, options?: SleeperRequestOptions): Promise<SleeperRoster[]>;
-  getPlayers(options?: SleeperRequestOptions): Promise<SleeperPlayerMap>;
+  getDraft(
+    draftId: string,
+    options?: SleeperRequestOptions,
+  ): Promise<SleeperDraft>;
+  getDraftPicks(
+    draftId: string,
+    options?: SleeperRequestOptions,
+  ): Promise<unknown[]>;
+  getLeague(
+    leagueId: string,
+    options?: SleeperRequestOptions,
+  ): Promise<SleeperLeague>;
+  getLeagueUsers(
+    leagueId: string,
+    options?: SleeperRequestOptions,
+  ): Promise<SleeperUser[]>;
+  getLeagueRosters(
+    leagueId: string,
+    options?: SleeperRequestOptions,
+  ): Promise<SleeperRoster[]>;
 };
 
 function errorResponse(error: unknown): NextResponse {
@@ -34,10 +55,18 @@ function errorResponse(error: unknown): NextResponse {
   }
   if (error instanceof SleeperError) {
     const status =
-      error.code === "NOT_FOUND" ? 404 : error.code === "RATE_LIMITED" ? 429 : 502;
+      error.code === "NOT_FOUND"
+        ? 404
+        : error.code === "RATE_LIMITED"
+          ? 429
+          : 502;
+    const headers =
+      error.code === "RATE_LIMITED" && error.retryAfterSeconds
+        ? { "Retry-After": String(error.retryAfterSeconds) }
+        : undefined;
     return NextResponse.json(
       { error: { code: error.code, message: error.message } },
-      { status },
+      { status, headers },
     );
   }
   return NextResponse.json(
@@ -46,8 +75,14 @@ function errorResponse(error: unknown): NextResponse {
   );
 }
 
-export function createDraftHandler(client: DetailClient) {
-  return async function GET(_request: Request, context: Context): Promise<NextResponse> {
+export function createDraftHandler(
+  client: DetailClient,
+  limiter: RateLimiter = sleeperRateLimiter,
+) {
+  return async function GET(
+    request: Request,
+    context: Context,
+  ): Promise<NextResponse> {
     let draftId: string;
     try {
       draftId = parseDraftReference((await context.params).draftId);
@@ -58,12 +93,24 @@ export function createDraftHandler(client: DetailClient) {
       );
     }
 
+    const rateLimit = limiter.check(requestClientKey(request));
+    if (!rateLimit.allowed) {
+      return NextResponse.json(
+        {
+          error: { code: "RATE_LIMITED", message: "Too many Sleeper requests" },
+        },
+        {
+          status: 429,
+          headers: { "Retry-After": String(rateLimit.retryAfterSeconds ?? 1) },
+        },
+      );
+    }
+
     try {
       const activeCache = { next: { revalidate: 2 } } as const;
-      const [draft, picks, players] = await Promise.all([
+      const [draft, picks] = await Promise.all([
         client.getDraft(draftId, activeCache),
         client.getDraftPicks(draftId, activeCache),
-        client.getPlayers({ next: { revalidate: 86_400 } }),
       ]);
       let league: SleeperLeague | undefined;
       let users: SleeperUser[] = [];
@@ -77,7 +124,7 @@ export function createDraftHandler(client: DetailClient) {
         ]);
       }
       return NextResponse.json(
-        normalizeDraft({ draft, picks, league, users, rosters, players }),
+        normalizeDraft({ draft, picks, league, users, rosters }),
       );
     } catch (error) {
       return errorResponse(error);

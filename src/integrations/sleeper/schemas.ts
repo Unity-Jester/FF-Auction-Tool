@@ -30,7 +30,10 @@ export const SleeperDraftSchema = z
     settings,
     metadata: settings.optional(),
     slot_to_roster_id: z.record(z.string(), identifier).optional(),
-    draft_order: z.record(z.string(), z.number().int().positive()).optional(),
+    draft_order: z
+      .record(z.string(), z.number().int().positive())
+      .nullable()
+      .optional(),
   })
   .passthrough();
 
@@ -38,8 +41,13 @@ export const SleeperPickSchema = z
   .object({
     draft_id: identifier,
     player_id: identifier,
-    roster_id: z.number().int().positive(),
+    roster_id: z.number().int().positive().nullable(),
+    draft_slot: z.number().int().positive(),
     pick_no: z.number().int().positive(),
+    is_keeper: z
+      .union([z.boolean(), z.number(), z.string()])
+      .nullable()
+      .optional(),
     metadata: settings,
   })
   .passthrough();
@@ -72,10 +80,13 @@ export const SleeperPlayerSchema = z
     last_name: z.string().optional(),
     position: z.string().nullable().optional(),
     team: z.string().nullable().optional(),
+    active: z.boolean().optional(),
+    status: z.string().nullable().optional(),
   })
   .passthrough();
 
 export const SleeperDraftsSchema = z.array(SleeperDraftSchema);
+export const SleeperRawDraftsSchema = z.array(z.unknown());
 export const SleeperPicksSchema = z.array(SleeperPickSchema);
 export const SleeperRawPicksSchema = z.array(z.unknown());
 export const SleeperUsersSchema = z.array(SleeperUserSchema);

@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import { SleeperClient, SleeperError } from "@/integrations/sleeper/client";
 import { normalizeDraft } from "@/integrations/sleeper/normalize-draft";
 import { parseDraftReference } from "@/integrations/sleeper/parse-draft-reference";
+import { createRateLimiter } from "@/integrations/sleeper/rate-limiter";
 import { createDraftHandler } from "@/app/api/sleeper/drafts/[draftId]/route";
+import { createPlayersHandler } from "@/app/api/sleeper/players/route";
 import { createUserDraftsHandler } from "@/app/api/sleeper/users/[username]/drafts/route";
 
 const auctionDraft = {
@@ -84,7 +86,9 @@ describe("parseDraftReference", () => {
     "123",
     "123456789012345678901234567890",
   ])("rejects %s without mining embedded digits", (reference) => {
-    expect(() => parseDraftReference(reference)).toThrow("Invalid Sleeper draft");
+    expect(() => parseDraftReference(reference)).toThrow(
+      "Invalid Sleeper draft",
+    );
   });
 });
 
@@ -97,8 +101,10 @@ describe("normalizeDraft", () => {
           draft_id: auctionDraft.draft_id,
           player_id: "4046",
           roster_id: 3,
+          draft_slot: 3,
           pick_no: 1,
-          metadata: { amount: "42", is_keeper: "true" },
+          is_keeper: true,
+          metadata: { amount: "42" },
         },
       ],
       league,
@@ -153,6 +159,7 @@ describe("normalizeDraft", () => {
           draft_id: auctionDraft.draft_id,
           player_id: "4046",
           roster_id: 3,
+          draft_slot: 3,
           pick_no: 1,
           metadata: { amount: "42 dollars" },
         },
@@ -168,6 +175,7 @@ describe("normalizeDraft", () => {
       draft_id: auctionDraft.draft_id,
       player_id: "4046",
       roster_id: 3,
+      draft_slot: 3,
       pick_no: 1,
       metadata: { amount: "42" },
     };
@@ -189,10 +197,14 @@ describe("normalizeDraft", () => {
       draft_id: auctionDraft.draft_id,
       player_id: "4046",
       roster_id: 3,
+      draft_slot: 3,
       pick_no: 1,
       metadata: { amount: "42", created_at: "2026-07-25T10:00:00.000Z" },
     };
-    const result = normalizeDraft({ draft: auctionDraft, picks: [pick, { ...pick }] });
+    const result = normalizeDraft({
+      draft: auctionDraft,
+      picks: [pick, { ...pick }],
+    });
 
     expect(result.snapshot.purchases).toHaveLength(1);
     expect(result.quarantinedPicks).toHaveLength(0);
@@ -203,6 +215,7 @@ describe("normalizeDraft", () => {
       draft_id: auctionDraft.draft_id,
       player_id: "4046",
       roster_id: 3,
+      draft_slot: 3,
       pick_no: 1,
       metadata: { amount: "42" },
     };
@@ -223,6 +236,7 @@ describe("normalizeDraft", () => {
       draft_id: auctionDraft.draft_id,
       player_id: "4046",
       roster_id: 3,
+      draft_slot: 3,
       pick_no: 1,
       metadata: { amount: "42", created_at: "2026-07-25T10:00:00.000Z" },
     };
@@ -232,7 +246,10 @@ describe("normalizeDraft", () => {
         pick,
         {
           ...pick,
-          metadata: { ...pick.metadata, created_at: "2026-07-25T10:00:01.000Z" },
+          metadata: {
+            ...pick.metadata,
+            created_at: "2026-07-25T10:00:01.000Z",
+          },
         },
       ],
     });
@@ -246,6 +263,7 @@ describe("normalizeDraft", () => {
       draft_id: auctionDraft.draft_id,
       player_id: "4046",
       roster_id: 3,
+      draft_slot: 3,
       pick_no: 1,
       metadata: { amount: "42" },
     };
@@ -276,16 +294,155 @@ describe("normalizeDraft", () => {
         ...auctionDraft,
         league_id: null,
         slot_to_roster_id: { "1": 7, "2": 2 },
-        draft_order: { Alice: 1, Bob: 2 },
+        draft_order: { "user-a": 1, "user-b": 2 },
         settings: { ...auctionDraft.settings, teams: 2 },
       },
       picks: [],
     });
 
-    expect(result.snapshot.teams.map((team) => [team.rosterId, team.name])).toEqual([
-      [7, "Alice"],
-      [2, "Bob"],
+    expect(
+      result.snapshot.teams.map((team) => [team.rosterId, team.name]),
+    ).toEqual([
+      [7, "Team 1"],
+      [2, "Team 2"],
     ]);
+    expect(result.teams.map((team) => team.userId)).toEqual([
+      "user-a",
+      "user-b",
+    ]);
+  });
+
+  it("normalizes an anonymized recorded mock-auction shape with null roster IDs", () => {
+    const result = normalizeDraft({
+      draft: {
+        draft_id: "1212208329762275328",
+        league_id: null,
+        type: "auction",
+        status: "paused",
+        draft_order: { "user-a": 1, "user-b": 2 },
+        slot_to_roster_id: { "1": 7, "2": 2 },
+        settings: {
+          teams: 2,
+          budget: 200,
+          rounds: 16,
+          slots_qb: 1,
+          slots_rb: 2,
+          slots_wr: 3,
+          slots_te: 1,
+          slots_flex: 2,
+          slots_super_flex: 1,
+        },
+        metadata: {},
+      },
+      picks: [
+        {
+          draft_id: "1212208329762275328",
+          player_id: "player-a",
+          roster_id: null,
+          draft_slot: 1,
+          pick_no: 1,
+          is_keeper: true,
+          metadata: { amount: "31", position: "RB" },
+        },
+        {
+          draft_id: "1212208329762275328",
+          player_id: "player-b",
+          roster_id: null,
+          draft_slot: 2,
+          pick_no: 2,
+          is_keeper: null,
+          metadata: { amount: "48", position: "QB" },
+        },
+      ],
+    });
+
+    expect(result.snapshot.status).toBe("drafting");
+    expect(result.snapshot.league.bench).toBe(6);
+    expect(result.snapshot.purchases).toEqual([
+      expect.objectContaining({
+        playerId: "player-a",
+        rosterId: 7,
+        amount: 31,
+        keeper: true,
+      }),
+      expect.objectContaining({
+        playerId: "player-b",
+        rosterId: 2,
+        amount: 48,
+        keeper: false,
+      }),
+    ]);
+    expect(result.snapshot.teams).toEqual([
+      expect.objectContaining({
+        rosterId: 7,
+        name: "Team 1",
+        remainingBudget: 169,
+      }),
+      expect.objectContaining({
+        rosterId: 2,
+        name: "Team 2",
+        remainingBudget: 152,
+      }),
+    ]);
+  });
+
+  it("quarantines a null-roster purchase only when its draft slot cannot be resolved", () => {
+    const result = normalizeDraft({
+      draft: {
+        ...auctionDraft,
+        league_id: null,
+        settings: { ...auctionDraft.settings, teams: 2 },
+        slot_to_roster_id: { "1": 7 },
+        draft_order: null,
+      },
+      picks: [
+        {
+          draft_id: auctionDraft.draft_id,
+          player_id: "4046",
+          roster_id: null,
+          draft_slot: 2,
+          pick_no: 1,
+          metadata: { amount: "42" },
+        },
+        {
+          draft_id: auctionDraft.draft_id,
+          player_id: "4047",
+          roster_id: null,
+          draft_slot: 3,
+          pick_no: 2,
+          metadata: { amount: "12" },
+        },
+      ],
+    });
+
+    expect(result.snapshot.purchases).toEqual([
+      expect.objectContaining({ playerId: "4046", rosterId: 2 }),
+    ]);
+    expect(result.quarantinedPicks).toEqual([
+      expect.objectContaining({ reason: "UNRESOLVED_ROSTER" }),
+    ]);
+  });
+
+  it("maps position reception bonuses for RB, WR, and TE", () => {
+    const result = normalizeDraft({
+      draft: auctionDraft,
+      picks: [],
+      league: {
+        ...league,
+        scoring_settings: {
+          ...league.scoring_settings,
+          bonus_rec_rb: 0.1,
+          bonus_rec_wr: 0.25,
+          bonus_rec_te: 0.75,
+        },
+      },
+    });
+
+    expect(result.snapshot.league.scoring.positionReceptionBonus).toEqual({
+      RB: 0.1,
+      WR: 0.25,
+      TE: 0.75,
+    });
   });
 });
 
@@ -301,23 +458,49 @@ describe("SleeperClient", () => {
     );
   });
 
+  it("preserves active-pick cache options on repeated identical reads", async () => {
+    const fetchFn = vi.fn(async () => new Response(JSON.stringify([])));
+    const client = new SleeperClient(fetchFn);
+    const cache = { next: { revalidate: 2 } } as const;
+
+    await client.getDraftPicks(auctionDraft.draft_id, cache);
+    await client.getDraftPicks(auctionDraft.draft_id, cache);
+
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(fetchFn).toHaveBeenNthCalledWith(
+      1,
+      `https://api.sleeper.app/v1/draft/${auctionDraft.draft_id}/picks`,
+      expect.objectContaining({ method: "GET", next: { revalidate: 2 } }),
+    );
+    expect(fetchFn).toHaveBeenNthCalledWith(
+      2,
+      `https://api.sleeper.app/v1/draft/${auctionDraft.draft_id}/picks`,
+      expect.objectContaining({ method: "GET", next: { revalidate: 2 } }),
+    );
+  });
+
   it.each([
     [404, "NOT_FOUND"],
     [429, "RATE_LIMITED"],
     [500, "UPSTREAM"],
-  ])("maps HTTP %s to %s without leaking response bodies", async (status, code) => {
-    const fetchFn = vi.fn(
-      async () => new Response("super-secret upstream body", { status }),
-    );
-    const client = new SleeperClient(fetchFn);
+  ])(
+    "maps HTTP %s to %s without leaking response bodies",
+    async (status, code) => {
+      const fetchFn = vi.fn(
+        async () => new Response("super-secret upstream body", { status }),
+      );
+      const client = new SleeperClient(fetchFn);
 
-    await expect(client.getDraft("123456789012345678")).rejects.toMatchObject({
-      code,
-    });
-    await expect(client.getDraft("123456789012345678")).rejects.not.toThrow(
-      /super-secret/,
-    );
-  });
+      await expect(client.getDraft("123456789012345678")).rejects.toMatchObject(
+        {
+          code,
+        },
+      );
+      await expect(client.getDraft("123456789012345678")).rejects.not.toThrow(
+        /super-secret/,
+      );
+    },
+  );
 
   it("maps invalid JSON/schema responses to MALFORMED", async () => {
     const client = new SleeperClient(
@@ -326,6 +509,55 @@ describe("SleeperClient", () => {
     await expect(client.getDraft("123456789012345678")).rejects.toMatchObject({
       code: "MALFORMED",
     });
+  });
+
+  it("maps a successful null user lookup to NOT_FOUND", async () => {
+    const client = new SleeperClient(vi.fn(async () => new Response("null")));
+    await expect(client.getUser("missing")).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
+  });
+
+  it("bounds upstream rate-limit retry signals", async () => {
+    const client = new SleeperClient(
+      vi.fn(
+        async () =>
+          new Response("secret", {
+            status: 429,
+            headers: { "Retry-After": "9999" },
+          }),
+      ),
+    );
+    await expect(client.getDraft(auctionDraft.draft_id)).rejects.toMatchObject({
+      code: "RATE_LIMITED",
+      retryAfterSeconds: 300,
+    });
+  });
+});
+
+describe("Sleeper rate limiter", () => {
+  it("uses a bounded deterministic window and prunes expired entries", () => {
+    let now = 0;
+    const limiter = createRateLimiter({
+      limit: 2,
+      windowMs: 1_000,
+      maxEntries: 2,
+      now: () => now,
+    });
+
+    expect(limiter.check("a").allowed).toBe(true);
+    expect(limiter.check("a").allowed).toBe(true);
+    expect(limiter.check("a")).toEqual({
+      allowed: false,
+      retryAfterSeconds: 1,
+    });
+    expect(limiter.check("b").allowed).toBe(true);
+    expect(limiter.size).toBe(2);
+    expect(limiter.check("c").allowed).toBe(true);
+    expect(limiter.size).toBe(2);
+    now = 1_001;
+    expect(limiter.check("d").allowed).toBe(true);
+    expect(limiter.size).toBe(1);
   });
 });
 
@@ -361,6 +593,70 @@ describe("Sleeper routes", () => {
     );
   });
 
+  it("keeps valid auctions through the real client when discovery entries are mixed", async () => {
+    const fetchFn = vi.fn(async (url: string) => {
+      if (url.endsWith("/user/Ada")) {
+        return new Response(
+          JSON.stringify({ user_id: "u1", display_name: "Ada" }),
+        );
+      }
+      if (url.endsWith("/state/nfl")) {
+        return new Response(JSON.stringify({ season: "2026" }));
+      }
+      if (url.endsWith("/user/u1/drafts/nfl/2026")) {
+        return new Response(
+          JSON.stringify([
+            { ...auctionDraft, draft_order: null },
+            {
+              ...auctionDraft,
+              draft_id: "333333333333333333",
+              type: "snake",
+              draft_order: null,
+            },
+            { type: "auction", status: "drafting", settings: {} },
+          ]),
+        );
+      }
+      return new Response("secret", { status: 500 });
+    });
+    const response = await createUserDraftsHandler(new SleeperClient(fetchFn))(
+      new Request("http://localhost", {
+        headers: { "x-real-ip": "198.51.100.1" },
+      }),
+      { params: Promise.resolve({ username: "Ada" }) },
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.drafts).toEqual([
+      expect.objectContaining({ draftId: auctionDraft.draft_id }),
+    ]);
+    expect(body.quarantinedDrafts).toEqual([
+      expect.objectContaining({ reason: "INVALID_DRAFT" }),
+    ]);
+  });
+
+  it("returns 404 when Sleeper answers an unknown username with null", async () => {
+    const fetchFn = vi.fn(async (url: string) => {
+      if (url.endsWith("/user/missing")) return new Response("null");
+      if (url.endsWith("/state/nfl")) {
+        return new Response(JSON.stringify({ season: "2026" }));
+      }
+      return new Response("secret", { status: 500 });
+    });
+    const response = await createUserDraftsHandler(new SleeperClient(fetchFn))(
+      new Request("http://localhost", {
+        headers: { "x-real-ip": "198.51.100.2" },
+      }),
+      { params: Promise.resolve({ username: "missing" }) },
+    );
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({
+      error: { code: "NOT_FOUND", message: "Sleeper resource not found" },
+    });
+  });
+
   it("normalizes real and mock draft detail without requiring global fetch", async () => {
     const createClient = (
       draft: Omit<typeof auctionDraft, "league_id"> & {
@@ -374,12 +670,16 @@ describe("Sleeper routes", () => {
       getLeague: vi.fn(async () => league),
       getLeagueUsers: vi.fn(async () => []),
       getLeagueRosters: vi.fn(async () => []),
-      getPlayers: vi.fn(async () => ({})),
+      getPlayers: vi.fn(async () => ({
+        huge: { full_name: "Do not serialize", blob: "x".repeat(1_100_000) },
+      })),
     });
 
     const realClient = createClient(auctionDraft);
     const realResponse = await createDraftHandler(realClient)(
-      new Request(`http://localhost/api/sleeper/drafts/${auctionDraft.draft_id}`),
+      new Request(
+        `http://localhost/api/sleeper/drafts/${auctionDraft.draft_id}`,
+      ),
       { params: Promise.resolve({ draftId: auctionDraft.draft_id }) },
     );
     expect(realResponse.status).toBe(200);
@@ -393,25 +693,28 @@ describe("Sleeper routes", () => {
       league_id: null,
       settings: { ...auctionDraft.settings, teams: 2 },
       slot_to_roster_id: { "1": 7, "2": 2 },
-      draft_order: { Alice: 1, Bob: 2 },
+      draft_order: { "user-a": 1, "user-b": 2 },
     });
     const mockResponse = await createDraftHandler(mockClient)(
-      new Request(`http://localhost/api/sleeper/drafts/${auctionDraft.draft_id}`),
+      new Request(
+        `http://localhost/api/sleeper/drafts/${auctionDraft.draft_id}`,
+      ),
       { params: Promise.resolve({ draftId: auctionDraft.draft_id }) },
     );
     expect(mockResponse.status).toBe(200);
     expect(mockClient.getLeague).not.toHaveBeenCalled();
-    expect(mockClient.getPlayers).toHaveBeenCalledWith(
-      expect.objectContaining({ next: { revalidate: 86_400 } }),
-    );
+    expect(mockClient.getPlayers).not.toHaveBeenCalled();
     expect(mockClient.getDraftPicks).toHaveBeenCalledWith(
       auctionDraft.draft_id,
       expect.objectContaining({ next: { revalidate: 2 } }),
     );
-    expect((await mockResponse.json()).snapshot.teams).toEqual([
-      expect.objectContaining({ rosterId: 7, name: "Alice" }),
-      expect.objectContaining({ rosterId: 2, name: "Bob" }),
+    const mockBody = await mockResponse.json();
+    expect(mockBody.snapshot.teams).toEqual([
+      expect.objectContaining({ rosterId: 7, name: "Team 1" }),
+      expect.objectContaining({ rosterId: 2, name: "Team 2" }),
     ]);
+    expect(mockBody.players).toBeUndefined();
+    expect(JSON.stringify(mockBody).length).toBeLessThan(1_000_000);
   });
 
   it("carries schema-invalid picks through the client and quarantines only that pick", async () => {
@@ -420,7 +723,7 @@ describe("Sleeper routes", () => {
       league_id: null,
       settings: { ...auctionDraft.settings, teams: 2 },
       slot_to_roster_id: { "1": 7, "2": 2 },
-      draft_order: { Alice: 1, Bob: 2 },
+      draft_order: { "user-a": 1, "user-b": 2 },
     };
     const fetchFn = vi.fn(async (url: string) => {
       if (url.endsWith(`/draft/${auctionDraft.draft_id}`)) {
@@ -433,6 +736,7 @@ describe("Sleeper routes", () => {
               draft_id: auctionDraft.draft_id,
               player_id: "4046",
               roster_id: 7,
+              draft_slot: 1,
               pick_no: 1,
               metadata: { amount: "42" },
             },
@@ -440,6 +744,7 @@ describe("Sleeper routes", () => {
               draft_id: auctionDraft.draft_id,
               player_id: "bad",
               roster_id: 0,
+              draft_slot: 2,
               pick_no: 2,
               metadata: { amount: "12" },
             },
@@ -450,7 +755,9 @@ describe("Sleeper routes", () => {
       return new Response("unexpected", { status: 500 });
     });
     const response = await createDraftHandler(new SleeperClient(fetchFn))(
-      new Request(`http://localhost/api/sleeper/drafts/${auctionDraft.draft_id}`),
+      new Request(
+        `http://localhost/api/sleeper/drafts/${auctionDraft.draft_id}`,
+      ),
       { params: Promise.resolve({ draftId: auctionDraft.draft_id }) },
     );
     const body = await response.json();
@@ -463,8 +770,8 @@ describe("Sleeper routes", () => {
       expect.objectContaining({ reason: "INVALID_PICK" }),
     ]);
     expect(body.snapshot.teams).toEqual([
-      expect.objectContaining({ rosterId: 7, name: "Alice" }),
-      expect.objectContaining({ rosterId: 2, name: "Bob" }),
+      expect.objectContaining({ rosterId: 7, name: "Team 1" }),
+      expect.objectContaining({ rosterId: 2, name: "Team 2" }),
     ]);
   });
 
@@ -508,29 +815,171 @@ describe("Sleeper routes", () => {
     });
   });
 
+  it("rate-limits the same client across different usernames without upstream calls", async () => {
+    const client = {
+      getUser: vi.fn(async (username: string) => ({
+        user_id: username,
+        display_name: username,
+      })),
+      getNflState: vi.fn(async () => ({ season: "2026" })),
+      getUserDrafts: vi.fn(async () => []),
+    };
+    const limiter = createRateLimiter({
+      limit: 1,
+      windowMs: 60_000,
+      now: () => 0,
+    });
+    const GET = createUserDraftsHandler(client, limiter);
+    const request = (username: string) =>
+      GET(
+        new Request("http://localhost", {
+          headers: { "x-forwarded-for": "198.51.100.9, 10.0.0.1" },
+        }),
+        { params: Promise.resolve({ username }) },
+      );
+
+    expect((await request("first-user")).status).toBe(200);
+    const denied = await request("second-user");
+    expect(denied.status).toBe(429);
+    expect(denied.headers.get("Retry-After")).toBe("60");
+    expect(await denied.json()).toEqual({
+      error: { code: "RATE_LIMITED", message: "Too many Sleeper requests" },
+    });
+    expect(client.getUser).toHaveBeenCalledTimes(1);
+    expect(client.getNflState).toHaveBeenCalledTimes(1);
+  });
+
+  it("rate-limits the same client across different draft IDs without upstream calls", async () => {
+    const client = {
+      getDraft: vi.fn(async (draftId: string) => ({
+        ...auctionDraft,
+        draft_id: draftId,
+        league_id: null,
+      })),
+      getDraftPicks: vi.fn(async () => []),
+      getLeague: vi.fn(),
+      getLeagueUsers: vi.fn(),
+      getLeagueRosters: vi.fn(),
+    };
+    const limiter = createRateLimiter({
+      limit: 1,
+      windowMs: 60_000,
+      now: () => 0,
+    });
+    const GET = createDraftHandler(client, limiter);
+    const request = (draftId: string) =>
+      GET(
+        new Request("http://localhost", {
+          headers: { "x-real-ip": "198.51.100.10" },
+        }),
+        { params: Promise.resolve({ draftId }) },
+      );
+
+    expect((await request("123456789012345678")).status).toBe(200);
+    expect((await request("223456789012345678")).status).toBe(429);
+    expect(client.getDraft).toHaveBeenCalledTimes(1);
+    expect(client.getDraftPicks).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     ["RATE_LIMITED", 429, "Sleeper rate limit reached"],
     ["UPSTREAM", 502, "Sleeper service unavailable"],
     ["MALFORMED", 502, "Sleeper returned malformed data"],
-  ] as const)("returns stable draft-route %s errors", async (code, status, message) => {
+  ] as const)(
+    "returns stable draft-route %s errors",
+    async (code, status, message) => {
+      const client = {
+        getDraft: vi.fn(async () => {
+          throw new SleeperError(code);
+        }),
+        getDraftPicks: vi.fn(async () => []),
+        getLeague: vi.fn(),
+        getLeagueUsers: vi.fn(),
+        getLeagueRosters: vi.fn(),
+        getPlayers: vi.fn(async () => ({})),
+      };
+      const response = await createDraftHandler(client)(
+        new Request("http://localhost"),
+        { params: Promise.resolve({ draftId: auctionDraft.draft_id }) },
+      );
+      const serialized = JSON.stringify(await response.json());
+
+      expect(response.status).toBe(status);
+      expect(JSON.parse(serialized)).toEqual({ error: { code, message } });
+      expect(serialized).not.toContain("raw upstream secret");
+    },
+  );
+
+  it("passes a bounded upstream rate-limit signal without retrying", async () => {
     const client = {
       getDraft: vi.fn(async () => {
-        throw new SleeperError(code);
+        throw new SleeperError("RATE_LIMITED", 17);
       }),
       getDraftPicks: vi.fn(async () => []),
       getLeague: vi.fn(),
       getLeagueUsers: vi.fn(),
       getLeagueRosters: vi.fn(),
-      getPlayers: vi.fn(async () => ({})),
     };
     const response = await createDraftHandler(client)(
-      new Request("http://localhost"),
+      new Request("http://localhost", {
+        headers: { "x-real-ip": "198.51.100.17" },
+      }),
       { params: Promise.resolve({ draftId: auctionDraft.draft_id }) },
     );
-    const serialized = JSON.stringify(await response.json());
 
-    expect(response.status).toBe(status);
-    expect(JSON.parse(serialized)).toEqual({ error: { code, message } });
-    expect(serialized).not.toContain("raw upstream secret");
+    expect(response.status).toBe(429);
+    expect(response.headers.get("Retry-After")).toBe("17");
+    expect(client.getDraft).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Sleeper player route", () => {
+  it("returns compact active players with one-day upstream caching", async () => {
+    const client = {
+      getPlayers: vi.fn(async () => ({
+        "1": {
+          player_id: "1",
+          full_name: "Active Player",
+          first_name: "Active",
+          last_name: "Player",
+          position: "RB",
+          team: "CHI",
+          active: true,
+          search_full_name: "activeplayer",
+          enormous_unused_field: "x".repeat(20_000),
+        },
+        "2": {
+          player_id: "2",
+          full_name: "Retired Player",
+          position: "QB",
+          team: null,
+          active: false,
+        },
+      })),
+    };
+    const response = await createPlayersHandler(client)(
+      new Request("http://localhost/api/sleeper/players", {
+        headers: { "x-real-ip": "198.51.100.22" },
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(client.getPlayers).toHaveBeenCalledWith({
+      next: { revalidate: 86_400 },
+    });
+    expect(body).toEqual({
+      players: [
+        {
+          playerId: "1",
+          fullName: "Active Player",
+          firstName: "Active",
+          lastName: "Player",
+          position: "RB",
+          team: "CHI",
+        },
+      ],
+    });
+    expect(JSON.stringify(body).length).toBeLessThan(1_000);
   });
 });

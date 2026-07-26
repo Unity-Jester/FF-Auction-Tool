@@ -1,11 +1,11 @@
-import type { z } from "zod";
+import { z } from "zod";
 
 import {
   SleeperDraftSchema,
-  SleeperDraftsSchema,
   SleeperLeagueSchema,
   SleeperNflStateSchema,
   SleeperPlayerMapSchema,
+  SleeperRawDraftsSchema,
   SleeperRawPicksSchema,
   SleeperRostersSchema,
   SleeperUserSchema,
@@ -13,10 +13,7 @@ import {
 } from "./schemas";
 
 export type SleeperErrorCode =
-  | "NOT_FOUND"
-  | "RATE_LIMITED"
-  | "UPSTREAM"
-  | "MALFORMED";
+  "NOT_FOUND" | "RATE_LIMITED" | "UPSTREAM" | "MALFORMED";
 
 const messages: Record<SleeperErrorCode, string> = {
   NOT_FOUND: "Sleeper resource not found",
@@ -26,7 +23,10 @@ const messages: Record<SleeperErrorCode, string> = {
 };
 
 export class SleeperError extends Error {
-  constructor(public readonly code: SleeperErrorCode) {
+  constructor(
+    public readonly code: SleeperErrorCode,
+    public readonly retryAfterSeconds?: number,
+  ) {
     super(messages[code]);
     this.name = "SleeperError";
   }
@@ -36,7 +36,27 @@ export type SleeperRequestOptions = RequestInit & {
   next?: { revalidate?: number };
 };
 
-type FetchFn = (input: string, init?: SleeperRequestOptions) => Promise<Response>;
+type FetchFn = (
+  input: string,
+  init?: SleeperRequestOptions,
+) => Promise<Response>;
+
+function boundedRetryAfter(response: Response): number {
+  const value = response.headers.get("Retry-After");
+  const seconds = Number(value);
+  if (Number.isFinite(seconds))
+    return Math.min(300, Math.max(1, Math.ceil(seconds)));
+  if (value) {
+    const timestamp = Date.parse(value);
+    if (Number.isFinite(timestamp)) {
+      return Math.min(
+        300,
+        Math.max(1, Math.ceil((timestamp - Date.now()) / 1_000)),
+      );
+    }
+  }
+  return 5;
+}
 
 export class SleeperClient {
   constructor(
@@ -61,7 +81,9 @@ export class SleeperClient {
 
     if (!response.ok) {
       if (response.status === 404) throw new SleeperError("NOT_FOUND");
-      if (response.status === 429) throw new SleeperError("RATE_LIMITED");
+      if (response.status === 429) {
+        throw new SleeperError("RATE_LIMITED", boundedRetryAfter(response));
+      }
       throw new SleeperError("UPSTREAM");
     }
 
@@ -72,24 +94,38 @@ export class SleeperClient {
     }
   }
 
-  getUser(username: string, options?: SleeperRequestOptions) {
-    return this.request(`/user/${encodeURIComponent(username)}`, SleeperUserSchema, options);
+  async getUser(username: string, options?: SleeperRequestOptions) {
+    const user = await this.request(
+      `/user/${encodeURIComponent(username)}`,
+      SleeperUserSchema.nullable(),
+      options,
+    );
+    if (user === null) throw new SleeperError("NOT_FOUND");
+    return user;
   }
 
   getNflState(options?: SleeperRequestOptions) {
     return this.request("/state/nfl", SleeperNflStateSchema, options);
   }
 
-  getUserDrafts(userId: string, season: string, options?: SleeperRequestOptions) {
+  getUserDrafts(
+    userId: string,
+    season: string,
+    options?: SleeperRequestOptions,
+  ) {
     return this.request(
       `/user/${encodeURIComponent(userId)}/drafts/nfl/${encodeURIComponent(season)}`,
-      SleeperDraftsSchema,
+      SleeperRawDraftsSchema,
       options,
     );
   }
 
   getDraft(draftId: string, options?: SleeperRequestOptions) {
-    return this.request(`/draft/${encodeURIComponent(draftId)}`, SleeperDraftSchema, options);
+    return this.request(
+      `/draft/${encodeURIComponent(draftId)}`,
+      SleeperDraftSchema,
+      options,
+    );
   }
 
   getDraftPicks(draftId: string, options?: SleeperRequestOptions) {
@@ -101,7 +137,11 @@ export class SleeperClient {
   }
 
   getLeague(leagueId: string, options?: SleeperRequestOptions) {
-    return this.request(`/league/${encodeURIComponent(leagueId)}`, SleeperLeagueSchema, options);
+    return this.request(
+      `/league/${encodeURIComponent(leagueId)}`,
+      SleeperLeagueSchema,
+      options,
+    );
   }
 
   getLeagueUsers(leagueId: string, options?: SleeperRequestOptions) {
