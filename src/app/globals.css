@@ -1,5 +1,7 @@
+@import "./setup.css";
+
 :root {
-  color-scheme: dark light;
+  color-scheme: dark;
   --color-canvas: #161817;
   --color-surface: #202320;
   --color-surface-raised: #292d29;
@@ -23,19 +25,6 @@
   --target-size: 2.75rem;
   --motion-fast: 150ms;
   --motion-standard: 220ms;
-}
-
-@media (prefers-color-scheme: light) {
-  :root {
-    --color-canvas: #f5f6f1;
-    --color-surface: #ffffff;
-    --color-surface-raised: #edf0e9;
-    --color-text: #1d211e;
-    --color-text-muted: #596158;
-    --color-line: #cbd2c8;
-    --color-accent-text: #4d6800;
-    --color-focus: #1d211e;
-  }
 }
 
 * {
