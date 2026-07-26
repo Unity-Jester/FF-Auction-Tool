@@ -28,7 +28,6 @@ export type SourceTeam = {
 export type NormalizedDraft = {
   snapshot: DraftSnapshot;
   teams: SourceTeam[];
-  users: Array<ReturnType<typeof SleeperUserSchema.parse>>;
   quarantinedPicks: QuarantinedPick[];
   warnings: DraftWarning[];
 };
@@ -434,7 +433,6 @@ export function normalizeDraft(input: NormalizeInput): NormalizedDraft {
       lastUpdatedAt: (input.now ?? new Date()).toISOString(),
     },
     teams: teamMetadata,
-    users,
     quarantinedPicks,
     warnings,
   };

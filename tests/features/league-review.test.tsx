@@ -25,6 +25,86 @@ const league = createLeagueConfig({
 });
 
 describe("LeagueReview", () => {
+  it("requires explicit confirmation when Sleeper scoring is unknown and labels local corrections", async () => {
+    const user = userEvent.setup();
+    render(
+      <LeagueReview
+        draftId="123456789012345678"
+        league={league}
+        draftStatus="drafting"
+        warnings={[
+          {
+            code: "SCORING_DEFAULTED",
+            source: "draft.metadata.scoring_type",
+            message: "Unknown mock scoring type; defaulted supported scoring rules",
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /Sleeper did not provide usable scoring rules/i,
+    );
+    expect(screen.getByText("Live draft")).toBeInTheDocument();
+    expect(screen.getByLabelText("Reception points").closest("label")).toHaveTextContent(
+      "Defaulted",
+    );
+    expect(screen.getByRole("button", { name: "Set strategy" })).toBeDisabled();
+
+    await user.clear(screen.getByLabelText("Reception points"));
+    await user.type(screen.getByLabelText("Reception points"), "1");
+    expect(screen.getByLabelText("Reception points").closest("label")).toHaveTextContent(
+      "Local edit",
+    );
+    await user.click(screen.getByLabelText("I verified the scoring rules"));
+    expect(screen.getByRole("button", { name: "Set strategy" })).toBeEnabled();
+  });
+
+  it("distinguishes inferred reception scoring from other defaulted mock fields", () => {
+    render(
+      <LeagueReview
+        draftId="123456789012345678"
+        league={league}
+        warnings={[
+          {
+            code: "SCORING_INFERRED",
+            source: "draft.metadata.scoring_type",
+            message: "Reception scoring inferred from ppr",
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByLabelText("Reception points").closest("label")).toHaveTextContent(
+      "Inferred from scoring type",
+    );
+    expect(screen.getByLabelText("Pass touchdown").closest("label")).toHaveTextContent(
+      "Defaulted",
+    );
+    expect(screen.getByRole("button", { name: "Set strategy" })).toBeEnabled();
+  });
+
+  it("adds and removes flex groups and shows the derived roster summary", async () => {
+    const user = userEvent.setup();
+    const noFlex = createLeagueConfig({
+      teams: 12,
+      budget: 200,
+      starters: { QB: 1, RB: 2, WR: 2, TE: 1, K: 1, DEF: 1 },
+      bench: 6,
+      flex: [],
+      receptionPoints: 1,
+    });
+    render(<LeagueReview draftId="123456789012345678" league={noFlex} />);
+
+    expect(screen.getByText(/8 fixed starters · 0 flex · 6 bench · 14 total/i)).toBeInTheDocument();
+    expect(screen.getByText(/Feasible/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Add flex group" }));
+    expect(screen.getByLabelText("Flex 1 slots")).toBeInTheDocument();
+    expect(screen.getByText(/8 fixed starters · 1 flex · 6 bench · 15 total/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Remove flex group 1" }));
+    expect(screen.queryByLabelText("Flex 1 slots")).not.toBeInTheDocument();
+  });
+
   it("edits every roster, flex, scoring, and cap setting before persisting it", async () => {
     const user = userEvent.setup();
     render(<LeagueReview draftId="123456789012345678" league={league} />);

@@ -14,6 +14,64 @@ const standardStarters = {
 const standardFlex = [{ count: 1, eligible: ["RB", "WR", "TE"] as const }];
 
 describe("createLeagueConfig", () => {
+  it.each([
+    ["teams", { teams: 33 }, "Teams cannot exceed 32"],
+    [
+      "budget",
+      { budget: Number.MAX_SAFE_INTEGER + 1 },
+      "Budget must be a positive integer",
+    ],
+    ["bench", { bench: 65 }, "Bench cannot exceed 64"],
+  ])("rejects an unrealistic manual %s correction", (_field, patch, message) => {
+    expect(() =>
+      createLeagueConfig({
+        teams: 12,
+        budget: 200,
+        starters: { QB: 1, RB: 2, WR: 2, TE: 1, K: 1, DEF: 1 },
+        bench: 6,
+        flex: [{ count: 1, eligible: ["RB", "WR", "TE"] }],
+        receptionPoints: 0.5,
+        ...patch,
+      }),
+    ).toThrow(message);
+  });
+
+  it("rejects unrealistic slot, flex-group, and scoring corrections", () => {
+    expect(() =>
+      createLeagueConfig({
+        teams: 12,
+        budget: 200,
+        starters: { QB: 65, RB: 0, WR: 0, TE: 0, K: 0, DEF: 0 },
+        bench: 0,
+        flex: [],
+        receptionPoints: 0,
+      }),
+    ).toThrow("QB starters cannot exceed 64");
+    expect(() =>
+      createLeagueConfig({
+        teams: 12,
+        budget: 200,
+        starters: { QB: 1, RB: 1, WR: 1, TE: 1, K: 0, DEF: 0 },
+        bench: 0,
+        flex: Array.from({ length: 17 }, () => ({
+          count: 1,
+          eligible: ["RB" as const],
+        })),
+        receptionPoints: 0,
+      }),
+    ).toThrow("Flex groups cannot exceed 16");
+    expect(() =>
+      createLeagueConfig({
+        teams: 12,
+        budget: 200,
+        starters: { QB: 1, RB: 1, WR: 1, TE: 1, K: 0, DEF: 0 },
+        bench: 0,
+        flex: [],
+        receptionPoints: 101,
+      }),
+    ).toThrow("Reception points must be between -100 and 100");
+  });
+
   it("normalizes a 12-team half-PPR auction league", () => {
     const league = createLeagueConfig({
       teams: 12,
@@ -117,6 +175,20 @@ describe("createLeagueConfig", () => {
         receptionPoints: 0.5,
       }),
     ).toThrow("Budget must cover every roster slot");
+  });
+
+  it("rejects unsafe integer money inputs before downstream arithmetic", () => {
+    expect(() =>
+      createLeagueConfig({
+        teams: 12,
+        budget: 200,
+        minBid: Number.MAX_SAFE_INTEGER + 1,
+        starters: standardStarters,
+        bench: 6,
+        flex: standardFlex,
+        receptionPoints: 0.5,
+      }),
+    ).toThrow("Minimum bid must be a positive integer");
   });
 
   it("merges scoring overrides with the default scoring rules", () => {

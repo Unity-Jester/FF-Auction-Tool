@@ -53,16 +53,63 @@ const model = (overrides: Partial<DraftRoomViewModel> = {}): DraftRoomViewModel 
   ignoredCorrections: [],
   dataWarnings: [],
   emptyMessage: null,
+  guidance: {
+    bestFits: [
+      {
+        playerId: "p1",
+        playerName: "Bijan Robinson",
+        position: "RB",
+        fits: ["RB"],
+        tier: "ELITE",
+        tierSupply: 3,
+        recommendedMaxBid: 57,
+      },
+    ],
+    rosterNeeds: {
+      fixed: { QB: 1, RB: 1, WR: 0, TE: 0, K: 0, DEF: 0 },
+      flex: [{ count: 1, eligible: ["RB", "WR", "TE"] }],
+      bench: 2,
+    },
+    blueprint: [
+      { position: "RB", filled: 1, open: 1, spent: 49, budget: 54 },
+      { position: "WR", filled: 1, open: 0, spent: 0, budget: 86 },
+    ],
+    budgetPace: {
+      remainingBudget: 151,
+      hardLegalMaximum: 148,
+      strategyMaximum: 143,
+      configuredExtraReserve: 5,
+    },
+    inflation: {
+      league: 1.08,
+      position: { QB: 0.97, RB: 1.12, WR: 1.04, TE: 1, K: 1, DEF: 1 },
+    },
+  },
   ...overrides,
 });
 
 describe("DraftRoomView", () => {
-  it("keeps base, strategy-adjusted, and maximum bid labels distinct", () => {
+  it("keeps base, adjusted, recommended, strategy, and hard legal limits distinct", () => {
     render(<DraftRoomView model={model()} onRetry={vi.fn()} />);
     const now = screen.getByRole("region", { name: "Selected player" });
     expect(within(now).getByText("Base value")).toBeInTheDocument();
     expect(within(now).getByText("Adjusted value")).toBeInTheDocument();
-    expect(within(now).getByText("My max bid")).toBeInTheDocument();
+    expect(within(now).getByText("Recommended max")).toBeInTheDocument();
+    expect(within(now).getByText(/Strategy ceiling \$143/i)).toBeInTheDocument();
+    expect(within(now).getByText(/Hard legal max \$148/i)).toBeInTheDocument();
+    expect(within(now).getByText(/extra strategy reserve/i)).toBeInTheDocument();
+  });
+
+  it("shows compact live fits, roster needs, tier supply, budget pace, and market movement", () => {
+    render(<DraftRoomView model={model()} onRetry={vi.fn()} />);
+    const now = screen.getByRole("region", { name: "Selected player" });
+    expect(within(now).getByText("Best fits now")).toBeInTheDocument();
+    expect(within(now).getByText(/Bijan Robinson.*RB need.*Elite tier.*3 remain/i)).toBeInTheDocument();
+    expect(within(now).getByText(/Fixed: QB 1 · RB 1/i)).toBeInTheDocument();
+    expect(within(now).getByText(/Flex: 1 RB\/WR\/TE/i)).toBeInTheDocument();
+    expect(within(now).getByText(/Bench: 2/i)).toBeInTheDocument();
+    expect(within(now).getByText(/League inflation.*1\.08×/i)).toBeInTheDocument();
+    expect(within(now).getByText(/RB inflation.*1\.12×/i)).toBeInTheDocument();
   });
 
   it("reveals a target and strategy explanation on demand", async () => {
@@ -299,7 +346,7 @@ describe("DraftRoomView", () => {
     expect(save).toHaveBeenCalledWith("owned", 1, 45);
   });
 
-  it("shows completed local conflicts separately and leaves them reversible", async () => {
+  it("shows authoritative and local conflict records side by side with a remove action", async () => {
     const user = userEvent.setup();
     const reverse = vi.fn();
     render(<DraftRoomView model={model({
@@ -309,14 +356,69 @@ describe("DraftRoomView", () => {
         playerName: "Amon-Ra St. Brown",
         teamName: "Sunday Office",
         amount: 1,
+        authoritativeTeamName: "Gridiron Lab",
+        authoritativeAmount: 49,
         reason: "Ignored because final Sleeper results are authoritative.",
       }],
     })} onRetry={vi.fn()} onReverseCorrection={reverse} />);
 
-    expect(screen.getByText(/Ignored local conflict/)).toBeInTheDocument();
+    expect(screen.getByText(/Local conflict/)).toBeInTheDocument();
+    expect(screen.getByText(/Sleeper authoritative.*Gridiron Lab.*\$49/i)).toBeInTheDocument();
+    expect(screen.getByText(/Local estimate.*Sunday Office.*\$1/i)).toBeInTheDocument();
     expect(screen.getByText(/final Sleeper results are authoritative/i)).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Reverse ignored correction for Amon-Ra St. Brown" }));
+    await user.click(screen.getByRole("button", { name: "Remove local conflict for Amon-Ra St. Brown" }));
     expect(reverse).toHaveBeenCalledWith("owned");
+  });
+
+  it("labels roster-only keeper occupancy and unknown cost directly in the roster", () => {
+    render(
+      <DraftRoomView
+        model={model({
+          teams: [
+            {
+              ...model().teams[0],
+              players: [
+                {
+                  id: "keeper",
+                  name: "Roster Keeper",
+                  position: "RB",
+                  amount: null,
+                  local: false,
+                  unknownCost: true,
+                },
+              ],
+            },
+            model().teams[1],
+          ],
+          dataWarnings: [
+            "1 roster-held player has authoritative ownership but no reliable auction price; roster occupancy is counted without guessing spend.",
+          ],
+        })}
+        onRetry={vi.fn()}
+      />,
+    );
+    expect(screen.getAllByText(/Keeper · cost unavailable/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/occupancy is counted without guessing spend/i)).toBeInTheDocument();
+  });
+
+  it("makes final rosters and balances primary while collapsing the zero-dollar reference board", () => {
+    render(
+      <DraftRoomView
+        model={model({
+          draftStatus: "complete",
+          players: model().players.map((player) => ({
+            ...player,
+            baseValue: 0,
+            adjustedValue: 0,
+            recommendedMaxBid: 0,
+          })),
+        })}
+        onRetry={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("heading", { name: "Final rosters and balances" })).toBeInTheDocument();
+    const board = screen.getByText(/Available \$0 reference board/i).closest("details");
+    expect(board).not.toHaveAttribute("open");
   });
 
   it("offers an explicit way to change the selected roster", async () => {
@@ -633,9 +735,37 @@ describe("buildDraftRoomViewModel", () => {
       expect.objectContaining({
         playerId: original.playerId,
         amount: 33,
+        authoritativeAmount: original.amount,
+        authoritativeTeamName: expect.any(String),
         reason: expect.stringMatching(/authoritative.*does not change values/i),
       }),
     );
+  });
+
+  it("does not revive ambiguous legacy name preferences", () => {
+    const active = { ...completed, status: "drafting" as const };
+    const duplicateNamePlayers = players.map((player, index) =>
+      index < 2 ? { ...player, name: "Same Name" } : player,
+    );
+    const strategy = defaultStrategy(active.league);
+    strategy.preferences = { "Same Name": "target" };
+    const result = buildDraftRoomViewModel({
+      snapshot: active,
+      league: active.league,
+      strategy,
+      preferences: {},
+      projections,
+      projectionSource: "Regression fixture",
+      projectionStale: false,
+      playerSnapshot: duplicateNamePlayers,
+      myRosterId: 1,
+      localCorrections: [],
+      syncStatus: "fresh",
+      lastUpdatedAt: active.lastUpdatedAt,
+    });
+    expect(
+      result.players.filter((player) => player.preference === "target"),
+    ).toEqual([]);
   });
 
   it("keeps purchased players with metadata but no projection in roster and position calculations", () => {

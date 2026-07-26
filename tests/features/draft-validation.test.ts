@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { createLeagueConfig } from "@/domain/league/defaults";
 import {
   parseDraftApiResponse,
+  parseDraftSetupResponse,
   parseDraftSnapshot,
 } from "@/features/draft-session/validate";
 
@@ -49,6 +50,20 @@ describe("draft response validation", () => {
   it("accepts a complete normalized API response for the requested draft", () => {
     expect(parseDraftApiResponse({ snapshot }, "draft-1")).toEqual(snapshot);
     expect(parseDraftSnapshot(snapshot, "draft-1")).toEqual(snapshot);
+  });
+
+  it("preserves safe scoring provenance for setup without accepting passthrough data", () => {
+    const warnings = [{
+      code: "SCORING_DEFAULTED",
+      source: "draft.metadata.scoring_type",
+      message: "Unknown mock scoring type; defaulted supported scoring rules",
+    }];
+    expect(
+      parseDraftSetupResponse(
+        { snapshot, warnings, users: [{ user_id: "private-extra" }] },
+        "draft-1",
+      ),
+    ).toEqual({ snapshot, warnings });
   });
 
   it.each([

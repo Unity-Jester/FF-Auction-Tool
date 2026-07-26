@@ -31,7 +31,13 @@ export const LeagueRosters = memo(function LeagueRosters({
               {team.players.length ? team.players.map((player) => (
                 <p key={player.id}>
                   <span>{player.position ?? "?"} · {player.name}</span>
-                  <span>{player.amount === null ? "—" : `$${player.amount}`}</span>
+                  <span>
+                    {player.amount === null
+                      ? player.unknownCost
+                        ? "Keeper · cost unavailable"
+                        : "Cost unavailable"
+                      : `$${player.amount}`}
+                  </span>
                   {onEditPurchase && model.draftStatus !== "complete" && (
                     <button
                       type="button"

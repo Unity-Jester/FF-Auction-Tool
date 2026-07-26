@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import type { DraftSnapshot } from "@/domain/draft/types";
+import type { DraftWarning } from "@/integrations/sleeper/normalize-draft";
 
 const identifier = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const timestamp = z.string().refine((value) => Number.isFinite(Date.parse(value)));
@@ -122,6 +123,14 @@ const snapshotSchema = z
     });
   });
 
+const warningSchema = z
+  .object({
+    code: z.enum(["SCORING_INFERRED", "SCORING_DEFAULTED"]),
+    source: z.literal("draft.metadata.scoring_type"),
+    message: z.string().min(1).max(256),
+  })
+  .strict();
+
 export class InvalidDraftResponseError extends Error {
   constructor() {
     super("Sleeper returned an invalid draft response");
@@ -154,4 +163,20 @@ export function parseDraftApiResponse(
     (value as Record<string, unknown>).snapshot,
     requestedDraftId,
   );
+}
+
+export function parseDraftSetupResponse(
+  value: unknown,
+  requestedDraftId: string,
+): { snapshot: DraftSnapshot; warnings: DraftWarning[] } {
+  if (!value || typeof value !== "object" || !("snapshot" in value)) {
+    throw new InvalidDraftResponseError();
+  }
+  const record = value as Record<string, unknown>;
+  const warnings = z.array(warningSchema).max(8).safeParse(record.warnings ?? []);
+  if (!warnings.success) throw new InvalidDraftResponseError();
+  return {
+    snapshot: parseDraftSnapshot(record.snapshot, requestedDraftId),
+    warnings: warnings.data,
+  };
 }

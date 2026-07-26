@@ -12,6 +12,8 @@
   --color-accent-text: #d9ff48;
   --color-accent-ink: #152000;
   --color-focus: #f3f5f0;
+  --color-warning: #ffc561;
+  --color-danger: #ff9c91;
   --font-sans: Arial, Helvetica, sans-serif;
   --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   --space-1: 0.25rem;
@@ -122,6 +124,24 @@ button {
   color: var(--color-text);
 }
 
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --color-canvas: #f7f8f4;
+    --color-surface: #edf0e9;
+    --color-surface-raised: #ffffff;
+    --color-text: #182017;
+    --color-text-muted: #4f5d4d;
+    --color-line: #b8c2b4;
+    --color-accent: #486900;
+    --color-accent-text: #3f6100;
+    --color-accent-ink: #ffffff;
+    --color-focus: #183f00;
+    --color-warning: #7a4c00;
+    --color-danger: #a1261d;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -140,6 +160,8 @@ button {
     --color-accent: Highlight;
     --color-accent-text: LinkText;
     --color-accent-ink: HighlightText;
+    --color-warning: LinkText;
+    --color-danger: LinkText;
   }
 
   button,

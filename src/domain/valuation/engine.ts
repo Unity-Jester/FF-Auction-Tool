@@ -1,5 +1,5 @@
 import type { DraftPurchase } from "../draft/types";
-import type { Position } from "../league/types";
+import type { FlexSlot, Position } from "../league/types";
 import {
   calculateBaseValues,
   type BasePlayerValue,
@@ -49,6 +49,13 @@ export type ValuationMetadata = {
       }>
     >
   >;
+  rosterNeeds: {
+    fixed: Record<Position, number>;
+    flex: FlexSlot[];
+    bench: number;
+  };
+  tierByPlayerId: Readonly<Record<string, ValueTier>>;
+  remainingSupplyAtOrAboveTierByPlayerId: Readonly<Record<string, number>>;
   blueprintProgress: {
     filledByPosition: Record<Position, number>;
     openByPosition: Record<Position, number>;
@@ -205,7 +212,7 @@ function buildPositionState(
   input: RunValuationEngineInput,
   selectedPositions: ReadonlyMap<string, Position>,
   eligiblePositions: ReadonlyMap<string, ReadonlyArray<Position>>,
-): PositionState {
+): PositionState & { rosterNeeds: ValuationMetadata["rosterNeeds"] } {
   const assignRoster = (playerIds: ReadonlyArray<string>) => {
     const counts = positionRecord();
     const assignments = new Map<string, Position>();
@@ -296,7 +303,20 @@ function buildPositionState(
       input.league.bench - Math.min(input.league.bench, unmatched),
     );
     const needs = positionRecord();
+    const fixedNeeds = positionRecord();
+    const flexNeeds = new Map<string, FlexSlot>();
     openSlots.forEach((slot) => {
+      if (slot.fixed !== undefined) {
+        fixedNeeds[slot.fixed] += 1;
+      } else {
+        const eligible = [...slot.eligible];
+        const key = eligible.join("|");
+        const current = flexNeeds.get(key);
+        flexNeeds.set(key, {
+          count: (current?.count ?? 0) + 1,
+          eligible,
+        });
+      }
       slot.eligible.forEach((position) => {
         needs[position] += 1;
       });
@@ -306,7 +326,16 @@ function buildPositionState(
         needs[position] += remainingBench;
       });
     }
-    return { assignments, counts, needs };
+    return {
+      assignments,
+      counts,
+      needs,
+      rosterNeeds: {
+        fixed: fixedNeeds,
+        flex: [...flexNeeds.values()],
+        bench: remainingBench,
+      },
+    };
   };
 
   const myTeam = input.teams.find(
@@ -343,6 +372,7 @@ function buildPositionState(
     spend,
     desiredSlots,
     leagueNeed,
+    rosterNeeds: myPositions.rosterNeeds,
   };
 }
 
@@ -536,6 +566,27 @@ export function runValuationEngineWithMetadata(
       scarcityByPosition.get(position)!.groups,
     ]),
   ) as ValuationMetadata["tiersByPosition"];
+  const tierOrder: ValueTier[] = ["ELITE", "HIGH", "MID", "LOW"];
+  const tierByPlayerId: Record<string, ValueTier> = {};
+  const remainingSupplyAtOrAboveTierByPlayerId: Record<string, number> = {};
+  POSITIONS.forEach((position) => {
+    const scarcity = scarcityByPosition.get(position)!;
+    const supplyAtOrAbove = Object.fromEntries(
+      tierOrder.map((tier, tierIndex) => [
+        tier,
+        scarcity.groups
+          .filter((group) => tierOrder.indexOf(group.tier) <= tierIndex)
+          .reduce((sum, group) => sum + group.supply, 0),
+      ]),
+    ) as Record<ValueTier, number>;
+    byPosition.get(position)!.forEach((player) => {
+      const tier = scarcity.tierByPlayerId.get(player.playerId);
+      if (tier === undefined) return;
+      tierByPlayerId[player.playerId] = tier;
+      remainingSupplyAtOrAboveTierByPlayerId[player.playerId] =
+        supplyAtOrAbove[tier];
+    });
+  });
   return {
     values: result,
     metadata: {
@@ -545,9 +596,12 @@ export function runValuationEngineWithMetadata(
       },
       bestFitPositionsByPlayerId,
       tiersByPosition,
+      rosterNeeds: positionState.rosterNeeds,
+      tierByPlayerId,
+      remainingSupplyAtOrAboveTierByPlayerId,
       blueprintProgress: {
         filledByPosition: { ...positionState.draftedCounts },
-        openByPosition: { ...positionState.desiredSlots },
+        openByPosition: { ...positionState.rosterNeeds.fixed },
         spendByPosition: { ...positionState.spend },
         budgetByPosition: { ...input.strategy.positionBudgets },
       },

@@ -18,6 +18,26 @@ const league = createLeagueConfig({
   flex: [{ count: 1, eligible: ["RB", "WR", "TE"] }],
   receptionPoints: 1,
 });
+const selectablePlayers = [
+  {
+    playerId: "9509",
+    name: "Bijan Robinson",
+    team: "ATL",
+    positions: ["RB" as const],
+  },
+  {
+    playerId: "dup-1",
+    name: "Alex Smith",
+    team: "ATL",
+    positions: ["WR" as const],
+  },
+  {
+    playerId: "dup-2",
+    name: "Alex Smith",
+    team: "BUF",
+    positions: ["QB" as const],
+  },
+];
 
 describe("StrategyBuilder", () => {
   afterEach(() => {
@@ -60,30 +80,113 @@ describe("StrategyBuilder", () => {
     ).toBeInTheDocument();
   });
 
-  it("updates player target and avoid preferences", async () => {
+  it("uses stable player identity for preferences and offers a neutral clear action", async () => {
     const user = userEvent.setup();
-    render(<StrategyBuilder draftId="123456789012345678" league={league} />);
-    await user.type(
-      screen.getByLabelText("Player preference"),
-      "Bijan Robinson",
+    render(
+      <StrategyBuilder
+        draftId="123456789012345678"
+        league={league}
+        players={selectablePlayers}
+      />,
     );
+    await user.selectOptions(screen.getByLabelText("Player"), "9509");
     await user.click(screen.getByRole("button", { name: "Target player" }));
-    expect(screen.getByText("Bijan Robinson · Target")).toBeInTheDocument();
+    expect(screen.getByText(/Bijan Robinson.*ATL.*RB.*Target/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Avoid player" }));
-    expect(screen.getByText("Bijan Robinson · Avoid")).toBeInTheDocument();
+    expect(screen.getByText(/Bijan Robinson.*ATL.*RB.*Avoid/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Clear player call" }));
+    expect(screen.queryByText(/Bijan Robinson.*Avoid/)).not.toBeInTheDocument();
   });
 
-  it("stores a manual value for a player", async () => {
-    const user = userEvent.setup();
-    render(<StrategyBuilder draftId="123456789012345678" league={league} />);
-    await user.type(
-      screen.getByLabelText("Player preference"),
-      "Bijan Robinson",
+  it("disambiguates duplicate names by player ID, team, and position", () => {
+    render(
+      <StrategyBuilder
+        draftId="123456789012345678"
+        league={league}
+        players={selectablePlayers}
+      />,
     );
+    expect(screen.getByRole("option", { name: "Alex Smith · ATL · WR · dup-1" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Alex Smith · BUF · QB · dup-2" })).toBeInTheDocument();
+  });
+
+  it("stores a manual dollar value by player identity", async () => {
+    const user = userEvent.setup();
+    render(
+      <StrategyBuilder
+        draftId="123456789012345678"
+        league={league}
+        players={selectablePlayers}
+      />,
+    );
+    await user.selectOptions(screen.getByLabelText("Player"), "9509");
     await user.clear(screen.getByLabelText("Manual value"));
     await user.type(screen.getByLabelText("Manual value"), "61");
     await user.click(screen.getByRole("button", { name: "Set manual value" }));
-    expect(screen.getByText("Bijan Robinson · Manual $61")).toBeInTheDocument();
+    expect(screen.getByText(/Bijan Robinson.*Manual dollar value.*\$61/)).toBeInTheDocument();
+  });
+
+  it("persists and clears supported individual projection statistics without losing CSV overrides", async () => {
+    const user = userEvent.setup();
+    const draftId = "individual-projection-draft";
+    const csv = {
+      playerId: "csv-player",
+      name: "CSV Player",
+      team: "CHI",
+      positions: ["WR" as const],
+      stats: { receptions: 80 },
+      source: "CSV override",
+      updatedAt: "2026-07-26T12:00:00.000Z",
+    };
+    saveSession({
+      version: 1,
+      draftId,
+      strategy: defaultStrategy(league),
+      preferences: {},
+      localCorrections: [],
+      csvProjectionOverrides: [csv],
+      savedAt: "2026-07-26T12:00:00.000Z",
+    });
+    render(
+      <StrategyBuilder
+        draftId={draftId}
+        league={league}
+        players={selectablePlayers}
+      />,
+    );
+    await user.selectOptions(screen.getByLabelText("Player"), "9509");
+    await user.selectOptions(screen.getByLabelText("Projection statistic"), "rushYards");
+    await user.type(screen.getByLabelText("Projection stat value"), "1450");
+    await user.click(screen.getByRole("button", { name: "Set projection stat" }));
+    expect(screen.getByText(/Individual projection.*Rush yards 1,450/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Enter draft room" }));
+    expect(loadSession(draftId)?.csvProjectionOverrides).toEqual(
+      expect.arrayContaining([
+        csv,
+        expect.objectContaining({
+          playerId: "9509",
+          source: "Individual projection override",
+          stats: { rushYards: 1450 },
+        }),
+      ]),
+    );
+
+    push.mockClear();
+    render(
+      <StrategyBuilder
+        draftId={draftId}
+        league={league}
+        players={selectablePlayers}
+      />,
+    );
+    await user.selectOptions(screen.getAllByLabelText("Player")[1], "9509");
+    await user.click(
+      screen.getAllByRole("button", { name: "Clear individual projection" })[1],
+    );
+    await user.click(
+      screen.getAllByRole("button", { name: "Enter draft room" })[1],
+    );
+    expect(loadSession(draftId)?.csvProjectionOverrides).toEqual([csv]);
   });
 
   it("prevents entry while position budgets do not equal available spend", async () => {
@@ -151,7 +254,9 @@ describe("StrategyBuilder", () => {
     render(<StrategyBuilder draftId={draftId} league={league} />);
 
     expect(screen.getByText("Bijan Robinson · Target")).toBeInTheDocument();
-    expect(screen.getByText("Bijan Robinson · Manual $61")).toBeInTheDocument();
+    expect(
+      screen.getByText("Bijan Robinson · Manual dollar value · $61"),
+    ).toBeInTheDocument();
   });
 
   it("merges edits without erasing corrections, CSV overrides, or session preferences", async () => {
@@ -187,15 +292,21 @@ describe("StrategyBuilder", () => {
       savedAt: "2026-07-26T12:00:00.000Z",
     });
 
-    render(<StrategyBuilder draftId={draftId} league={league} />);
-    await user.type(screen.getByLabelText("Player preference"), "Bijan Robinson");
+    render(
+      <StrategyBuilder
+        draftId={draftId}
+        league={league}
+        players={selectablePlayers}
+      />,
+    );
+    await user.selectOptions(screen.getByLabelText("Player"), "9509");
     await user.click(screen.getByRole("button", { name: "Target player" }));
     await user.click(screen.getByRole("button", { name: "Enter draft room" }));
 
     expect(loadSession(draftId)).toEqual(expect.objectContaining({
       localCorrections: [correction],
       csvProjectionOverrides: [csv],
-      preferences: { p3: "lock", "Bijan Robinson": "target" },
+      preferences: { p3: "lock", "9509": "target" },
     }));
   });
 

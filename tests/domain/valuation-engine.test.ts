@@ -376,6 +376,25 @@ describe("runValuationEngine", () => {
     expect(
       result.get("rb-1")!.adjustments.map((adjustment) => adjustment.code),
     ).toEqual(expect.arrayContaining(["ROSTER_NEED", "POSITION_BUDGET"]));
+    expect(detailed.metadata.rosterNeeds).toEqual({
+      fixed: { QB: 0, RB: 0, WR: 0, TE: 0, K: 0, DEF: 0 },
+      flex: [{ count: 1, eligible: ["RB", "WR", "TE"] }],
+      bench: 0,
+    });
+    expect(detailed.metadata.blueprintProgress.openByPosition).toEqual({
+      QB: 0,
+      RB: 0,
+      WR: 0,
+      TE: 0,
+      K: 0,
+      DEF: 0,
+    });
+    expect(detailed.metadata.tierByPlayerId["rb-1"]).toMatch(
+      /ELITE|HIGH|MID|LOW/,
+    );
+    expect(
+      detailed.metadata.remainingSupplyAtOrAboveTierByPlayerId["rb-1"],
+    ).toBeGreaterThan(0);
   });
 
   it("adds scarcity at the remaining league fixed-starter boundary", () => {

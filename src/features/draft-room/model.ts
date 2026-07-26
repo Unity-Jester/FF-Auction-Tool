@@ -3,7 +3,12 @@ import type { LeagueConfig, Position } from "@/domain/league/types";
 import type { PlayerProjection } from "@/domain/players/types";
 import type { PlayerPreference, StrategyConfig } from "@/domain/strategy/types";
 import { calculateBaseValues } from "@/domain/valuation/base-values";
-import { runValuationEngine, type PlayerValuation } from "@/domain/valuation/engine";
+import {
+  runValuationEngineWithMetadata,
+  type PlayerValuation,
+  type ValuationMetadata,
+} from "@/domain/valuation/engine";
+import type { ValueTier } from "@/domain/valuation/adjust-values";
 import { calculateReplacementLevels } from "@/domain/valuation/replacement-levels";
 import { scoreProjection } from "@/domain/valuation/score-projection";
 import type { DraftSyncStatus } from "@/features/draft-session/use-draft-sync";
@@ -31,6 +36,9 @@ export type DraftRoomPlayer = {
   maximumLegalBid: number;
   strategyMaximumBid?: number;
   inflationMultiplier?: number;
+  bestFitPositions?: Position[];
+  tier?: ValueTier | null;
+  tierSupply?: number;
   preference: PlayerPreference;
   explanation: string;
   adjustments: Array<{ label: string; delta: number }>;
@@ -48,6 +56,7 @@ export type DraftRoomTeam = {
     position: Position | null;
     amount: number | null;
     local: boolean;
+    unknownCost?: boolean;
   }>;
 };
 
@@ -82,6 +91,8 @@ export type DraftRoomViewModel = {
     playerName: string;
     teamName: string;
     amount: number;
+    authoritativeTeamName: string | null;
+    authoritativeAmount: number | null;
     reason: string;
   }>;
   dataWarnings: string[];
@@ -91,6 +102,30 @@ export type DraftRoomViewModel = {
   inflation?: {
     league: number;
     byPosition: Record<Position, number>;
+  };
+  guidance: {
+    bestFits: Array<{
+      playerId: string;
+      playerName: string;
+      position: Position;
+      fits: Position[];
+      tier: ValueTier | null;
+      tierSupply: number;
+      recommendedMaxBid: number;
+    }>;
+    rosterNeeds: ValuationMetadata["rosterNeeds"];
+    blueprint: Array<{
+      position: Position;
+      filled: number;
+      open: number;
+      spent: number;
+      budget: number;
+    }>;
+    budgetPace: ValuationMetadata["budgetPace"];
+    inflation: {
+      league: number;
+      position: Record<Position, number>;
+    };
   };
 };
 
@@ -181,15 +216,9 @@ function normalizedStrategy(
   players: ReadonlyMap<string, PlayerSnapshot>,
   preferences: Record<string, PlayerPreference>,
 ): StrategyConfig {
-  const idByName = new Map(
-    [...players.values()].map((player) => [player.name.toLocaleLowerCase(), player.playerId]),
-  );
   const normalizeRecord = <T,>(record: Record<string, T>) =>
     Object.fromEntries(
-      Object.entries(record).map(([key, value]) => [
-        players.has(key) ? key : (idByName.get(key.toLocaleLowerCase()) ?? key),
-        value,
-      ]),
+      Object.entries(record).filter(([key]) => players.has(key)),
     );
   return {
     ...strategy,
@@ -274,6 +303,7 @@ export function buildDraftRoomViewModel(input: {
     (purchase) => knownIds.has(purchase.playerId) && validRosterIds.has(purchase.rosterId),
   );
   let values = new Map<string, PlayerValuation>();
+  let valuationMetadata: ValuationMetadata | null = null;
   let baselineDisplayValues = new Map<string, number>();
   let valuationError: string | null = ledgerMessage;
   if (!ledgerMessage) {
@@ -304,7 +334,7 @@ export function buildDraftRoomViewModel(input: {
           replacementLevels: preDraftReplacementLevels,
         }).entries()].map(([playerId, value]) => [playerId, value.displayValue]),
       );
-      values = runValuationEngine({
+      const valuation = runValuationEngineWithMetadata({
         league: input.league,
         strategy,
         players: scored,
@@ -315,6 +345,8 @@ export function buildDraftRoomViewModel(input: {
         auctionComplete: input.snapshot.status === "complete",
         preDraftDisplayValues: baselineDisplayValues,
       });
+      values = valuation.values;
+      valuationMetadata = valuation.metadata;
     } catch (error) {
       valuationError = valuationFailureMessage(error);
     }
@@ -336,6 +368,13 @@ export function buildDraftRoomViewModel(input: {
         maximumLegalBid: value.maximumLegalBid,
         strategyMaximumBid: value.strategyMaximumBid,
         inflationMultiplier: value.inflationMultiplier,
+        bestFitPositions:
+          valuationMetadata?.bestFitPositionsByPlayerId[value.playerId] ?? [],
+        tier: valuationMetadata?.tierByPlayerId[value.playerId] ?? null,
+        tierSupply:
+          valuationMetadata?.remainingSupplyAtOrAboveTierByPlayerId[
+            value.playerId
+          ] ?? 0,
         preference: strategy.preferences[value.playerId] ?? "neutral",
         explanation: value.explanation,
         adjustments: value.adjustments.map(({ label, delta }) => ({ label, delta })),
@@ -369,6 +408,7 @@ export function buildDraftRoomViewModel(input: {
         position: player?.positions[0] ?? projection?.positions[0] ?? null,
         amount: purchase?.amount ?? null,
         local: purchase?.source === "local",
+        unknownCost: team.unknownCostPlayerIds?.includes(playerId) ?? false,
       };
     }),
   }));
@@ -397,6 +437,29 @@ export function buildDraftRoomViewModel(input: {
     const live = candidates.reduce((sum, value) => sum + value.displayValue, 0);
     return baseline > 0 ? live / baseline : 1;
   };
+  const leagueInflation = inflationFor();
+  const positionInflation = Object.fromEntries(
+    positions.map((position) => [position, inflationFor(position)]),
+  ) as Record<Position, number>;
+  const emptyRosterNeeds: ValuationMetadata["rosterNeeds"] = {
+    fixed: Object.fromEntries(
+      positions.map((position) => [position, 0]),
+    ) as Record<Position, number>,
+    flex: [],
+    bench: 0,
+  };
+  const fallbackBudgetPace: ValuationMetadata["budgetPace"] = {
+    remainingBudget:
+      teams.find((team) => team.rosterId === input.myRosterId)
+        ?.remainingBudget ?? 0,
+    hardLegalMaximum:
+      teams.find((team) => team.rosterId === input.myRosterId)
+        ?.maximumLegalBid ?? 0,
+    strategyMaximum:
+      teams.find((team) => team.rosterId === input.myRosterId)
+        ?.maximumLegalBid ?? 0,
+    configuredExtraReserve: 0,
+  };
   return {
     draftId: input.snapshot.draftId,
     draftStatus: input.snapshot.status,
@@ -424,17 +487,25 @@ export function buildDraftRoomViewModel(input: {
       teamName: teams.find((team) => team.rosterId === purchase.rosterId)?.name ?? `Roster ${purchase.rosterId}`,
       amount: purchase.amount,
     })),
-    ignoredCorrections: effective.ignored.map((purchase) => ({
-      playerId: purchase.playerId,
-      playerName: metadata.get(purchase.playerId)?.name ?? projectionById.get(purchase.playerId)?.name ?? `Unknown player ${purchase.playerId}`,
-      teamName: teams.find((team) => team.rosterId === purchase.rosterId)?.name ?? `Roster ${purchase.rosterId}`,
-      amount: purchase.amount,
-      reason: input.snapshot.purchases.some(
-        (authoritative) => authoritative.playerId === purchase.playerId,
-      )
-        ? "Sleeper now has an authoritative purchase; the differing local correction is visible but does not change values."
-        : "Ignored because final Sleeper results are authoritative.",
-    })),
+    ignoredCorrections: effective.ignored.map((purchase) => {
+      const authoritative = input.snapshot.purchases.find(
+        (candidate) => candidate.playerId === purchase.playerId,
+      );
+      return {
+        playerId: purchase.playerId,
+        playerName: metadata.get(purchase.playerId)?.name ?? projectionById.get(purchase.playerId)?.name ?? `Unknown player ${purchase.playerId}`,
+        teamName: teams.find((team) => team.rosterId === purchase.rosterId)?.name ?? `Roster ${purchase.rosterId}`,
+        amount: purchase.amount,
+        authoritativeTeamName: authoritative
+          ? teams.find((team) => team.rosterId === authoritative.rosterId)?.name ??
+            `Roster ${authoritative.rosterId}`
+          : null,
+        authoritativeAmount: authoritative?.amount ?? null,
+        reason: authoritative
+          ? "Sleeper now has an authoritative purchase; the differing local correction is visible but does not change values."
+          : "Ignored because final Sleeper results are authoritative.",
+      };
+    }),
     dataWarnings: [
       ...(unjoinable.length
         ? [`${unjoinable.length} purchase${unjoinable.length === 1 ? "" : "s"} could not be joined to player position data.`]
@@ -453,10 +524,36 @@ export function buildDraftRoomViewModel(input: {
         : null),
     reviewSetupRequired: ledgerMessage !== null,
     inflation: {
-      league: inflationFor(),
-      byPosition: Object.fromEntries(
-        positions.map((position) => [position, inflationFor(position)]),
-      ) as Record<Position, number>,
+      league: leagueInflation,
+      byPosition: positionInflation,
+    },
+    guidance: {
+      bestFits: available
+        .filter((player) => (player.bestFitPositions?.length ?? 0) > 0)
+        .slice(0, 3)
+        .map((player) => ({
+          playerId: player.id,
+          playerName: player.name,
+          position: player.position,
+          fits: player.bestFitPositions ?? [],
+          tier: player.tier ?? null,
+          tierSupply: player.tierSupply ?? 0,
+          recommendedMaxBid: player.recommendedMaxBid,
+        })),
+      rosterNeeds: valuationMetadata?.rosterNeeds ?? emptyRosterNeeds,
+      blueprint: positions.map((position) => ({
+        position,
+        filled: valuationMetadata?.blueprintProgress.filledByPosition[position] ?? 0,
+        open: valuationMetadata?.blueprintProgress.openByPosition[position] ?? 0,
+        spent: valuationMetadata?.blueprintProgress.spendByPosition[position] ?? 0,
+        budget: valuationMetadata?.blueprintProgress.budgetByPosition[position] ??
+          input.strategy.positionBudgets[position],
+      })),
+      budgetPace: valuationMetadata?.budgetPace ?? fallbackBudgetPace,
+      inflation: {
+        league: leagueInflation,
+        position: positionInflation,
+      },
     },
   };
 }

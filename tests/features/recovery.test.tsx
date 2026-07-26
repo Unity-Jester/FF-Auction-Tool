@@ -72,6 +72,33 @@ describe("transparent recovery and help", () => {
     expect(css).toContain("@media (forced-colors: active)");
   });
 
+  it("provides a complete high-contrast light theme without losing forced-color support", () => {
+    const css = readFileSync("src/app/globals.css", "utf8");
+    expect(css).toMatch(
+      /@media\s*\(prefers-color-scheme:\s*light\)[\s\S]*color-scheme:\s*light/,
+    );
+    for (const token of [
+      "--color-canvas",
+      "--color-surface",
+      "--color-surface-raised",
+      "--color-text",
+      "--color-text-muted",
+      "--color-line",
+      "--color-accent",
+      "--color-accent-text",
+      "--color-accent-ink",
+      "--color-focus",
+      "--color-warning",
+      "--color-danger",
+    ]) {
+      expect(
+        css.match(new RegExp(`${token}:`, "g"))?.length ?? 0,
+        `${token} should have dark and light values`,
+      ).toBeGreaterThanOrEqual(2);
+    }
+    expect(css).toContain("@media (forced-colors: active)");
+  });
+
   it("does not hide league information at tablet widths or nest page mains", () => {
     const css = readFileSync("src/features/draft-room/draft-room.module.css", "utf8");
     expect(css).not.toMatch(/max-width:\s*1100px[^}]*\.leagueRegion\s*\{\s*display:\s*none/s);

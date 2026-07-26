@@ -4,6 +4,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import type { LeagueConfig, Position } from "@/domain/league/types";
+import type {
+  PlayerProjection,
+  ProjectionStats,
+} from "@/domain/players/types";
 import type { PlayerPreference, StrategyConfig } from "@/domain/strategy/types";
 import { parseProjectionCsv } from "@/integrations/projections/csv-provider";
 import {
@@ -33,21 +37,41 @@ const presetLabels: Array<[StrategyConfig["archetype"], string]> = [
   ["stars-and-scrubs", "Stars and scrubs"],
   ["custom", "Custom"],
 ];
+const projectionStats = [
+  ["Pass yards", "passYards"],
+  ["Pass touchdowns", "passTds"],
+  ["Interceptions", "interceptions"],
+  ["Rush yards", "rushYards"],
+  ["Rush touchdowns", "rushTds"],
+  ["Receptions", "receptions"],
+  ["Receiving yards", "receivingYards"],
+  ["Receiving touchdowns", "receivingTds"],
+  ["Fumbles lost", "fumblesLost"],
+] as const satisfies ReadonlyArray<[string, keyof ProjectionStats]>;
+const individualProjectionSource = "Individual projection override";
 
 export function StrategyBuilder({
   draftId,
   league,
+  players = [],
+  projections = [],
 }: {
   draftId: string;
   league: LeagueConfig;
+  players?: readonly ProjectionPlayer[];
+  projections?: readonly PlayerProjection[];
 }) {
   const router = useRouter();
   const [savedSession] = useState(() => loadSession(draftId));
   const [strategy, setStrategy] = useState(
     () => savedSession?.strategy ?? defaultStrategy(league),
   );
-  const [player, setPlayer] = useState("");
+  const [playerId, setPlayerId] = useState(() => players[0]?.playerId ?? "");
   const [manualValue, setManualInput] = useState("");
+  const [projectionStat, setProjectionStat] =
+    useState<keyof ProjectionStats>("rushYards");
+  const [projectionStatValue, setProjectionStatValue] = useState("");
+  const [projectionError, setProjectionError] = useState("");
   const [savedName, setSavedName] = useState("");
   const [savedStrategies, setSavedStrategies] = useState<SavedStrategy[]>([]);
   const [savedId, setSavedId] = useState<string | null>(null);
@@ -159,21 +183,97 @@ export function StrategyBuilder({
       },
     }));
   const preference = (value: PlayerPreference) => {
-    const name = player.trim();
-    if (!name) return;
+    if (!playerId) return;
     setStrategy((current) => ({
       ...current,
-      preferences: { ...current.preferences, [name]: value },
+      preferences:
+        value === "neutral"
+          ? Object.fromEntries(
+              Object.entries(current.preferences).filter(
+                ([key]) => key !== playerId,
+              ),
+            )
+          : { ...current.preferences, [playerId]: value },
     }));
   };
   const applyManualValue = () => {
-    const name = player.trim();
     const value = Number(manualValue);
-    if (!name || !Number.isFinite(value) || value < 0) return;
+    if (!playerId || !Number.isFinite(value) || value < 0) return;
     setStrategy((current) => ({
       ...current,
-      valueOverrides: { ...current.valueOverrides, [name]: value },
+      valueOverrides: { ...current.valueOverrides, [playerId]: value },
     }));
+  };
+  const applyProjectionStat = () => {
+    const player = players.find((candidate) => candidate.playerId === playerId);
+    const value = Number(projectionStatValue);
+    if (
+      !player ||
+      !projectionStats.some(([, key]) => key === projectionStat) ||
+      !Number.isFinite(value) ||
+      value < 0 ||
+      value > 100_000
+    ) {
+      setProjectionError(
+        "Choose a player and enter a projection from 0 to 100,000.",
+      );
+      return;
+    }
+    const existing = csvProjectionOverrides.find(
+      (projection) =>
+        projection.playerId === playerId &&
+        projection.source === individualProjectionSource,
+    );
+    const baseline = projections.find(
+      (projection) => projection.playerId === playerId,
+    );
+    const next: PlayerProjection = {
+      playerId: player.playerId,
+      name: player.name,
+      team: player.team,
+      positions: [...player.positions],
+      stats: {
+        ...(baseline?.stats ?? {}),
+        ...(existing?.stats ?? {}),
+        [projectionStat]: value,
+      },
+      source: individualProjectionSource,
+      updatedAt: new Date().toISOString(),
+    };
+    setCsvProjectionOverrides((current) => [
+      ...current.filter(
+        (projection) =>
+          !(
+            projection.playerId === playerId &&
+            projection.source === individualProjectionSource
+          ),
+      ),
+      next,
+    ]);
+    setProjectionError("");
+    setProjectionStatValue("");
+  };
+  const clearIndividualProjection = () => {
+    if (!playerId) return;
+    setCsvProjectionOverrides((current) =>
+      current.filter(
+        (projection) =>
+          !(
+            projection.playerId === playerId &&
+            projection.source === individualProjectionSource
+          ),
+      ),
+    );
+    setProjectionError("");
+  };
+  const selectedPlayer = players.find(
+    (candidate) => candidate.playerId === playerId,
+  );
+  const playerLabel = (id: string) => {
+    const player = players.find((candidate) => candidate.playerId === id);
+    return player
+      ? `${player.name} · ${player.team ?? "FA"} · ${player.positions.join("/")}`
+      : id;
   };
   const saveNamedStrategy = async () => {
     if (mutationPending) return;
@@ -276,7 +376,11 @@ export function StrategyBuilder({
     setCsvError("");
     setCsvResult(null);
     if (file.size > MAX_CSV_FILE_BYTES) {
-      setCsvProjectionOverrides([]);
+      setCsvProjectionOverrides((current) =>
+        current.filter(
+          (projection) => projection.source === individualProjectionSource,
+        ),
+      );
       setCsvError(
         "The CSV exceeds the 1 MB file limit. Choose a smaller file.",
       );
@@ -285,21 +389,34 @@ export function StrategyBuilder({
       return;
     }
     try {
-      const response = await fetch("/api/sleeper/players");
-      if (!response.ok) throw new Error("players");
-      const payload = (await response.json()) as {
-        players?: ProjectionPlayer[];
-      };
-      if (!Array.isArray(payload.players)) throw new Error("players");
-      const result = parseProjectionCsv(await file.text(), payload.players);
+      let projectionPlayers = players;
+      if (projectionPlayers.length === 0) {
+        const response = await fetch("/api/sleeper/players");
+        if (!response.ok) throw new Error("players");
+        const payload = (await response.json()) as {
+          players?: ProjectionPlayer[];
+        };
+        if (!Array.isArray(payload.players)) throw new Error("players");
+        projectionPlayers = payload.players;
+      }
+      const result = parseProjectionCsv(await file.text(), projectionPlayers);
       setCsvResult(result);
       const overMatchLimit = result.unsupported.some(
         (row) => row.reason === CSV_MATCH_LIMIT_ERROR,
       );
-      setCsvProjectionOverrides(overMatchLimit ? [] : result.matched);
+      setCsvProjectionOverrides((current) => [
+        ...current.filter(
+          (projection) => projection.source === individualProjectionSource,
+        ),
+        ...(overMatchLimit ? [] : result.matched),
+      ]);
       if (overMatchLimit) setCsvError(CSV_MATCH_LIMIT_ERROR);
     } catch {
-      setCsvProjectionOverrides([]);
+      setCsvProjectionOverrides((current) =>
+        current.filter(
+          (projection) => projection.source === individualProjectionSource,
+        ),
+      );
       setCsvError(
         "The CSV could not be imported. Check the file and try again.",
       );
@@ -541,13 +658,38 @@ export function StrategyBuilder({
       </div>
       <section className="preferences">
         <h2>Player calls</h2>
+        <p className="section-note">
+          Player calls use Sleeper player IDs. Manual dollar values change auction
+          value only; individual projections change supported projected stats.
+        </p>
         <div className="input-row">
-          <input
-            aria-label="Player preference"
-            value={player}
-            onChange={(event) => setPlayer(event.target.value)}
-            placeholder="Player name"
-          />
+          <label>
+            Player
+            <select
+              aria-label="Player"
+              value={playerId}
+              onChange={(event) => {
+                setPlayerId(event.target.value);
+                setProjectionError("");
+              }}
+            >
+              {players.length === 0 && (
+                <option value="">Player identities unavailable</option>
+              )}
+              {[...players]
+                .sort(
+                  (left, right) =>
+                    left.name.localeCompare(right.name) ||
+                    left.playerId.localeCompare(right.playerId),
+                )
+                .map((player) => (
+                  <option key={player.playerId} value={player.playerId}>
+                    {player.name} · {player.team ?? "FA"} ·{" "}
+                    {player.positions.join("/")} · {player.playerId}
+                  </option>
+                ))}
+            </select>
+          </label>
           <input
             aria-label="Manual value"
             inputMode="numeric"
@@ -566,20 +708,88 @@ export function StrategyBuilder({
           <button type="button" onClick={() => preference("lock")}>
             Lock player
           </button>
+          <button type="button" onClick={() => preference("neutral")}>
+            Clear player call
+          </button>
           <button type="button" onClick={applyManualValue}>
             Set manual value
           </button>
         </div>
-        {Object.entries(strategy.preferences).map(([name, value]) => (
-          <p key={name}>
-            {name} · {value[0].toUpperCase() + value.slice(1)}
+        <div className="input-row">
+          <label>
+            Projection statistic
+            <select
+              aria-label="Projection statistic"
+              value={projectionStat}
+              onChange={(event) =>
+                setProjectionStat(
+                  event.target.value as keyof ProjectionStats,
+                )
+              }
+            >
+              {projectionStats.map(([label, key]) => (
+                <option key={key} value={key}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Projection stat value
+            <input
+              aria-label="Projection stat value"
+              type="number"
+              min="0"
+              max="100000"
+              value={projectionStatValue}
+              onChange={(event) => setProjectionStatValue(event.target.value)}
+            />
+          </label>
+          <button type="button" onClick={applyProjectionStat}>
+            Set projection stat
+          </button>
+          <button
+            type="button"
+            disabled={!csvProjectionOverrides.some(
+              (projection) =>
+                projection.playerId === playerId &&
+                projection.source === individualProjectionSource,
+            )}
+            onClick={clearIndividualProjection}
+          >
+            Clear individual projection
+          </button>
+        </div>
+        {projectionError && <p role="alert">{projectionError}</p>}
+        {Object.entries(strategy.preferences).map(([id, value]) => (
+          <p key={id}>
+            {playerLabel(id)} · {value[0].toUpperCase() + value.slice(1)}
           </p>
         ))}
-        {Object.entries(strategy.valueOverrides).map(([name, value]) => (
-          <p key={`${name}-manual`}>
-            {name} · Manual ${value}
+        {Object.entries(strategy.valueOverrides).map(([id, value]) => (
+          <p key={`${id}-manual`}>
+            {playerLabel(id)} · Manual dollar value · ${value}
           </p>
         ))}
+        {csvProjectionOverrides
+          .filter(
+            (projection) =>
+              projection.source === individualProjectionSource &&
+              (!selectedPlayer || projection.playerId === selectedPlayer.playerId),
+          )
+          .map((projection) => (
+            <p key={`${projection.playerId}-projection`}>
+              {playerLabel(projection.playerId)} · Individual projection ·{" "}
+              {Object.entries(projection.stats)
+                .map(([key, value]) => {
+                  const label =
+                    projectionStats.find(([, field]) => field === key)?.[0] ??
+                    key;
+                  return `${label} ${Number(value).toLocaleString("en-US")}`;
+                })
+                .join(" · ")}
+            </p>
+          ))}
       </section>
       <section className="projection-import" aria-labelledby="projection-import-title">
         <div>
@@ -625,9 +835,17 @@ export function StrategyBuilder({
               </details>
             ) : null}
           </div>
-        ) : csvProjectionOverrides.length ? (
+        ) : csvProjectionOverrides.filter(
+            (projection) => projection.source !== individualProjectionSource,
+          ).length ? (
           <p role="status">
-            {csvProjectionOverrides.length} saved CSV overrides will be used.
+            {
+              csvProjectionOverrides.filter(
+                (projection) =>
+                  projection.source !== individualProjectionSource,
+              ).length
+            }{" "}
+            saved CSV overrides will be used.
           </p>
         ) : null}
       </section>

@@ -3,7 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { use } from "react";
 import { LeagueReview } from "@/features/setup/components/league-review";
-import { parseDraftApiResponse } from "@/features/draft-session/validate";
+import { parseDraftSetupResponse } from "@/features/draft-session/validate";
 import { draftLoadMessage } from "@/features/connect/draft-load-message";
 import { resolveLeagueConfig } from "@/persistence/league-storage";
 
@@ -17,7 +17,7 @@ async function getDraft(draftId: string) {
     } | null;
     throw new Error(draftLoadMessage(payload?.error?.code));
   }
-  return parseDraftApiResponse(await response.json(), draftId);
+  return parseDraftSetupResponse(await response.json(), draftId);
 }
 
 export default function SetupPage({
@@ -47,8 +47,10 @@ export default function SetupPage({
     <section className="stage" aria-label="Draft setup">
       <LeagueReview
         draftId={draftId}
-        league={resolveLeagueConfig(draftId, query.data.league)}
-        importedLeague={query.data.league}
+        league={resolveLeagueConfig(draftId, query.data.snapshot.league)}
+        importedLeague={query.data.snapshot.league}
+        draftStatus={query.data.snapshot.status}
+        warnings={query.data.warnings}
       />
     </section>
   );

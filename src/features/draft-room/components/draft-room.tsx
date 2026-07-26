@@ -220,11 +220,31 @@ export function DraftRoomView({
       )}
       <div className={styles.workspace}>
         {panel("now", styles.nowRegion, <>
-          <CurrentPlayer
-            player={selected}
-            recentPurchase={model.recentPurchase}
-            onEditRecentPurchase={onAddCorrection && model.draftStatus !== "complete" ? openCorrection : undefined}
-          />
+          {model.draftStatus === "complete" ? (
+            <section className={styles.finalSummary} aria-labelledby="final-summary-title">
+              <p className={styles.eyebrow}>Draft review</p>
+              <h1 id="final-summary-title">Final rosters and balances</h1>
+              <p>
+                Sleeper’s final purchases are authoritative. Remaining balances
+                and roster occupancy are shown in My team and League.
+              </p>
+              <dl>
+                {model.teams.map((team) => (
+                  <div key={team.rosterId}>
+                    <dt>{team.name}</dt>
+                    <dd>${team.remainingBudget} · {team.players.length} players</dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+          ) : (
+            <CurrentPlayer
+              player={selected}
+              guidance={model.guidance}
+              recentPurchase={model.recentPurchase}
+              onEditRecentPurchase={onAddCorrection ? openCorrection : undefined}
+            />
+          )}
           {selected && onAddCorrection && model.draftStatus !== "complete" && correctionPlayerId === null && (
             <div className={styles.correctionControl}>
               <button id={`correction-trigger-${selected.id}`} className={styles.criticalAction} type="button" onClick={() => openCorrection(selected.id)}>
@@ -289,6 +309,11 @@ export function DraftRoomView({
                 <Link href={`/draft/${model.draftId}/setup`}>Review setup</Link>
               )}
             </div>
+          ) : model.draftStatus === "complete" ? (
+            <details className={styles.completedBoard}>
+              <summary>Available $0 reference board</summary>
+              <PlayerBoard players={model.players} selectedPlayerId={effectiveSelectedPlayerId} onSelectPlayer={select} />
+            </details>
           ) : (
             <PlayerBoard players={model.players} selectedPlayerId={effectiveSelectedPlayerId} onSelectPlayer={select} />
           )

@@ -31,12 +31,34 @@ export const MyRoster = memo(function MyRoster({
         </div>
         <div><dt>Open slots</dt><dd>{team.openSlots}</dd></div>
       </dl>
+      <div className={styles.blueprint} aria-labelledby="blueprint-title">
+        <h3 id="blueprint-title">Strategy blueprint</h3>
+        {model.guidance.blueprint.map((item) => (
+          <div key={item.position}>
+            <span>
+              {item.position} · {item.filled} filled · {item.open} open
+            </span>
+            <span>${item.spent} / ${item.budget}</span>
+            <progress
+              aria-label={`${item.position} budget used`}
+              max={Math.max(1, item.budget)}
+              value={Math.min(item.spent, Math.max(1, item.budget))}
+            />
+          </div>
+        ))}
+      </div>
       <div className={styles.rosterList}>
         {team.players.length ? team.players.map((player) => (
           <div key={player.id} className={styles.rosterPlayer}>
             <span>{player.position ?? "?"}</span>
             <strong>{player.name}</strong>
-            <span>{player.amount === null ? "—" : `$${player.amount}`}</span>
+            <span>
+              {player.amount === null
+                ? player.unknownCost
+                  ? "Keeper · cost unavailable"
+                  : "Cost unavailable"
+                : `$${player.amount}`}
+            </span>
             {onEditPurchase && model.draftStatus !== "complete" && (
               <button
                 className={styles.editPurchase}
@@ -81,16 +103,21 @@ export const MyRoster = memo(function MyRoster({
       {model.ignoredCorrections.map((correction) => (
         <div key={correction.playerId} className={styles.ignoredCorrection}>
           <small>
-            <strong>Ignored local conflict</strong> · {correction.playerName} · ${correction.amount}
+            <strong>Local conflict</strong>
+            <span>
+              Sleeper authoritative · {correction.authoritativeTeamName ?? "final result"}
+              {correction.authoritativeAmount === null ? "" : ` · $${correction.authoritativeAmount}`}
+            </span>
+            <span>Local estimate · {correction.teamName} · ${correction.amount}</span>
             <span>{correction.reason}</span>
           </small>
           <button
             className={styles.criticalAction}
             type="button"
-            aria-label={`Reverse ignored correction for ${correction.playerName}`}
+            aria-label={`Remove local conflict for ${correction.playerName}`}
             onClick={() => onReverseCorrection?.(correction.playerId)}
           >
-            Reverse
+            Remove
           </button>
         </div>
       ))}
@@ -100,6 +127,7 @@ export const MyRoster = memo(function MyRoster({
   previous.model.draftStatus === next.model.draftStatus &&
   previous.model.selectedRosterId === next.model.selectedRosterId &&
   previous.model.teams === next.model.teams &&
+  previous.model.guidance === next.model.guidance &&
   previous.model.localCorrections === next.model.localCorrections &&
   previous.model.ignoredCorrections === next.model.ignoredCorrections,
 );

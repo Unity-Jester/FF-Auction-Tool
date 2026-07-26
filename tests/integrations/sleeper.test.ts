@@ -151,6 +151,7 @@ describe("normalizeDraft", () => {
       userId: "u3",
       name: "Ada",
     });
+    expect(result).not.toHaveProperty("users");
   });
 
   it("preserves reliable roster-held ownership missing from the pick stream without inventing a price", () => {
@@ -506,6 +507,7 @@ describe("normalizeDraft", () => {
     ["half_ppr", 0.5, "SCORING_INFERRED"],
     ["ppr", 1, "SCORING_INFERRED"],
     ["dynasty_2qb", 0, "SCORING_DEFAULTED"],
+    ["2qb", 0, "SCORING_DEFAULTED"],
   ] as const)(
     "maps mock scoring type %s to %s receptions with a source note",
     (scoringType, reception, warningCode) => {
