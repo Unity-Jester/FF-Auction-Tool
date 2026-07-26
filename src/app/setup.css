@@ -125,6 +125,12 @@
   margin: 0 0 var(--space-4);
   font-size: 1rem;
 }
+.review-grid section > h2:not(:first-child) {
+  margin-top: var(--space-8);
+}
+.review-grid section > .field-grid + h2 {
+  padding-top: var(--space-2);
+}
 .review h2 + p {
   color: var(--color-text-muted);
   line-height: 1.7;
@@ -230,6 +236,40 @@
 .primary:disabled {
   cursor: not-allowed;
   opacity: 0.45;
+}
+.draft-shell {
+  display: flex;
+  min-height: 100svh;
+  flex-direction: column;
+  justify-content: center;
+}
+.draft-shell-copy {
+  max-width: 38rem;
+  margin: var(--space-6) 0 0;
+  color: var(--color-text-muted);
+  font-size: 1.05rem;
+  line-height: 1.65;
+}
+.draft-shell-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  align-items: center;
+  margin-top: var(--space-8);
+}
+.draft-shell-actions a {
+  color: var(--color-text-muted);
+  font-weight: 700;
+  text-decoration: none;
+}
+.draft-shell-actions .primary-link {
+  display: inline-flex;
+  min-height: var(--target-size);
+  padding: 0 var(--space-4);
+  align-items: center;
+  border-radius: var(--radius);
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
 }
 @keyframes arrive {
   from {

@@ -16,6 +16,7 @@ const league = createLeagueConfig({
   bench: 6,
   flex: [{ count: 1, eligible: ["RB", "WR", "TE"] }],
   receptionPoints: 1,
+  scoring: { positionReceptionBonus: { RB: 0.25, WR: 0.5, TE: 1 } },
 });
 
 describe("LeagueReview", () => {
@@ -34,6 +35,9 @@ describe("LeagueReview", () => {
       "Flex 1 eligibility",
       "Reception points",
       "Pass touchdown",
+      "RB reception bonus",
+      "WR reception bonus",
+      "TE reception bonus",
       "K/DEF at $1",
     ])
       expect(screen.getByLabelText(label)).toBeInTheDocument();
@@ -48,6 +52,7 @@ describe("LeagueReview", () => {
       flex: [{ eligible: ["QB", "RB", "WR", "TE"] }],
       capKickerDefenseAtOne: false,
       rosterSize: 16,
+      scoring: { positionReceptionBonus: { RB: 0.25, WR: 0.5, TE: 1 } },
     });
     expect(push).toHaveBeenCalledWith("/draft/123456789012345678/strategy");
   });

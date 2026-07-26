@@ -41,6 +41,12 @@ export function LeagueReview({
     scoring: Object.fromEntries(
       scoringFields.map(([, key]) => [key, String(league.scoring[key])]),
     ),
+    positionReceptionBonus: Object.fromEntries(
+      (["RB", "WR", "TE"] as const).map((position) => [
+        position,
+        String(league.scoring.positionReceptionBonus[position] ?? 0),
+      ]),
+    ),
     cap: league.capKickerDefenseAtOne,
   }));
   const [error, setError] = useState<string | null>(null);
@@ -78,11 +84,19 @@ export function LeagueReview({
             .filter(Boolean) as Position[],
         })),
         receptionPoints: Number(values.scoring.reception),
-        scoring: Object.fromEntries(
-          scoringFields
-            .filter(([, key]) => key !== "reception")
-            .map(([, key]) => [key, Number(values.scoring[key])]),
-        ),
+        scoring: {
+          ...Object.fromEntries(
+            scoringFields
+              .filter(([, key]) => key !== "reception")
+              .map(([, key]) => [key, Number(values.scoring[key])]),
+          ),
+          positionReceptionBonus: Object.fromEntries(
+            (["RB", "WR", "TE"] as const).map((position) => [
+              position,
+              Number(values.positionReceptionBonus[position]),
+            ]),
+          ),
+        },
         capKickerDefenseAtOne: values.cap,
       });
       saveLeagueConfig(draftId, next);
@@ -167,6 +181,22 @@ export function LeagueReview({
                     ...s,
                     scoring: { ...s.scoring, [key]: v },
                   })),
+                )}
+              </span>
+            ))}
+            {(["RB", "WR", "TE"] as const).map((position) => (
+              <span key={`${position}-bonus`}>
+                {field(
+                  `${position} reception bonus`,
+                  values.positionReceptionBonus[position],
+                  (v) =>
+                    setValues((s) => ({
+                      ...s,
+                      positionReceptionBonus: {
+                        ...s.positionReceptionBonus,
+                        [position]: v,
+                      },
+                    })),
                 )}
               </span>
             ))}
