@@ -51,6 +51,7 @@ export type DraftRoomTeam = {
 export type DraftRoomViewModel = {
   draftId: string;
   draftStatus: DraftSnapshot["status"];
+  minBid: number;
   syncStatus: DraftSyncStatus;
   lastUpdatedAt: string | null;
   projectionStatus: "fresh" | "stale" | "empty";
@@ -60,6 +61,8 @@ export type DraftRoomViewModel = {
   teams: DraftRoomTeam[];
   players: DraftRoomPlayer[];
   recentPurchase: {
+    playerId: string;
+    rosterId: number;
     playerName: string;
     teamName: string;
     amount: number;
@@ -71,6 +74,14 @@ export type DraftRoomViewModel = {
     teamName: string;
     amount: number;
   }>;
+  ignoredCorrections: Array<{
+    playerId: string;
+    playerName: string;
+    teamName: string;
+    amount: number;
+    reason: string;
+  }>;
+  dataWarnings: string[];
   emptyMessage: string | null;
   configurationNotice?: string | null;
 };
@@ -81,26 +92,57 @@ function maxLegal(team: Pick<TeamDraftState, "remainingBudget" | "openSlots">, m
     : Math.max(0, team.remainingBudget - Math.max(0, team.openSlots - 1) * minBid);
 }
 
-function effectiveTeams(
-  teams: TeamDraftState[],
+function onePurchasePerPlayer(purchases: DraftPurchase[]): DraftPurchase[] {
+  const byPlayer = new Map<string, DraftPurchase>();
+  [...purchases]
+    .sort((left, right) => left.pickNo - right.pickNo)
+    .forEach((purchase) => byPlayer.set(purchase.playerId, purchase));
+  return [...byPlayer.values()].sort((left, right) => left.pickNo - right.pickNo);
+}
+
+function effectivePurchases(
+  snapshot: DraftSnapshot,
   corrections: DraftPurchase[],
-): TeamDraftState[] {
-  return teams.map((team) => {
-    const additions = corrections.filter(
-      (purchase) =>
-        purchase.rosterId === team.rosterId &&
-        !team.playerIds.includes(purchase.playerId),
-    );
-    return additions.reduce<TeamDraftState>(
-      (current, purchase) => ({
-        ...current,
-        remainingBudget: Math.max(0, current.remainingBudget - purchase.amount),
-        openSlots: Math.max(0, current.openSlots - 1),
-        playerIds: [...current.playerIds, purchase.playerId],
-      }),
-      team,
-    );
+): { purchases: DraftPurchase[]; active: DraftPurchase[]; ignored: DraftPurchase[] } {
+  const authoritative = onePurchasePerPlayer(snapshot.purchases);
+  const local = onePurchasePerPlayer(corrections);
+  if (snapshot.status === "complete") {
+    return { purchases: authoritative, active: [], ignored: local };
+  }
+  const byPlayer = new Map(authoritative.map((purchase) => [purchase.playerId, purchase]));
+  local.forEach((purchase) => byPlayer.set(purchase.playerId, purchase));
+  return {
+    purchases: [...byPlayer.values()].sort((left, right) => left.pickNo - right.pickNo),
+    active: local,
+    ignored: [],
+  };
+}
+
+function rebuildTeams(
+  snapshotTeams: TeamDraftState[],
+  league: LeagueConfig,
+  purchases: DraftPurchase[],
+): { teams: TeamDraftState[]; unownedPurchases: DraftPurchase[] } {
+  const teams = snapshotTeams.map((team) => ({
+    rosterId: team.rosterId,
+    name: team.name,
+    remainingBudget: league.budget,
+    openSlots: league.rosterSize,
+    playerIds: [] as string[],
+  }));
+  const byRoster = new Map(teams.map((team) => [team.rosterId, team]));
+  const unownedPurchases: DraftPurchase[] = [];
+  purchases.forEach((purchase) => {
+    const team = byRoster.get(purchase.rosterId);
+    if (!team) {
+      unownedPurchases.push(purchase);
+      return;
+    }
+    team.remainingBudget -= purchase.amount;
+    team.openSlots -= 1;
+    team.playerIds.push(purchase.playerId);
   });
+  return { teams, unownedPurchases };
 }
 
 function valuationFailureMessage(error: unknown): string {
@@ -158,29 +200,42 @@ export function buildDraftRoomViewModel(input: {
   const metadata = new Map(input.playerSnapshot.map((player) => [player.playerId, player]));
   const projectionById = new Map(input.projections.map((projection) => [projection.playerId, projection]));
   const strategy = normalizedStrategy(input.strategy, metadata, input.preferences);
-  const scored = input.projections.flatMap((projection) => {
+  const effective = effectivePurchases(input.snapshot, input.localCorrections);
+  const rebuilt = rebuildTeams(input.snapshot.teams, input.league, effective.purchases);
+  const scoredById = new Map(input.projections.flatMap((projection) => {
     const supported = positions.filter((position) => projection.positions.includes(position));
     if (supported.length === 0) return [];
     const overridden = strategy.projectionOverrides[projection.playerId];
-    return [{
+    return [[projection.playerId, {
       playerId: projection.playerId,
       positions: supported,
       points: Number.isFinite(overridden)
         ? overridden
         : Math.max(...supported.map((position) =>
             scoreProjection(projection.stats, input.league.scoring, position))),
-    }];
+    }] as const];
+  }));
+  const unjoinable: DraftPurchase[] = [];
+  effective.purchases.forEach((purchase) => {
+    if (scoredById.has(purchase.playerId)) return;
+    const player = metadata.get(purchase.playerId);
+    const supported = positions.filter((position) => player?.positions.includes(position));
+    if (supported.length === 0) {
+      unjoinable.push(purchase);
+      return;
+    }
+    scoredById.set(purchase.playerId, {
+      playerId: purchase.playerId,
+      positions: supported,
+      points: 0,
+    });
   });
-  const effective = effectiveTeams(input.snapshot.teams, input.localCorrections);
-  const valuationTeams =
-    input.snapshot.status === "complete" &&
-    effective.every((team) => team.openSlots === 0 && team.remainingBudget >= 0)
-      ? effective.map((team) => ({ ...team, remainingBudget: 0 }))
-      : effective;
-  const draftedIds = new Set(effective.flatMap((team) => team.playerIds));
+  const scored = [...scoredById.values()];
+  const draftedIds = new Set(rebuilt.teams.flatMap((team) => team.playerIds));
   const knownIds = new Set(scored.map((player) => player.playerId));
-  const purchases = [...input.snapshot.purchases, ...input.localCorrections].filter(
-    (purchase) => knownIds.has(purchase.playerId),
+  const validRosterIds = new Set(rebuilt.teams.map((team) => team.rosterId));
+  const valuationPurchases = effective.purchases.filter(
+    (purchase) => knownIds.has(purchase.playerId) && validRosterIds.has(purchase.rosterId),
   );
   const replacementLevels = calculateReplacementLevels({
     league: input.league,
@@ -194,10 +249,11 @@ export function buildDraftRoomViewModel(input: {
       league: input.league,
       strategy,
       players: scored,
-      teams: valuationTeams,
+      teams: rebuilt.teams,
       replacementLevels,
       myRosterId: input.myRosterId,
-      purchases,
+      purchases: valuationPurchases,
+      auctionComplete: input.snapshot.status === "complete",
     });
   } catch (error) {
     valuationError = valuationFailureMessage(error);
@@ -228,12 +284,9 @@ export function buildDraftRoomViewModel(input: {
       a.name.localeCompare(b.name),
     );
   const purchaseByPlayer = new Map(
-    [...input.snapshot.purchases, ...input.localCorrections].map((purchase) => [
-      purchase.playerId,
-      purchase,
-    ]),
+    effective.purchases.map((purchase) => [purchase.playerId, purchase]),
   );
-  const teams: DraftRoomTeam[] = effective.map((team) => ({
+  const teams: DraftRoomTeam[] = rebuilt.teams.map((team) => ({
     rosterId: team.rosterId,
     name: team.name,
     remainingBudget: team.remainingBudget,
@@ -252,7 +305,7 @@ export function buildDraftRoomViewModel(input: {
       };
     }),
   }));
-  const orderedPurchases = [...input.snapshot.purchases, ...input.localCorrections].sort(
+  const orderedPurchases = [...effective.purchases].sort(
     (a, b) => b.pickNo - a.pickNo,
   );
   const latest = orderedPurchases[0];
@@ -263,6 +316,7 @@ export function buildDraftRoomViewModel(input: {
   return {
     draftId: input.snapshot.draftId,
     draftStatus: input.snapshot.status,
+    minBid: input.league.minBid,
     syncStatus: input.syncStatus,
     lastUpdatedAt: input.lastUpdatedAt,
     projectionStatus:
@@ -273,17 +327,34 @@ export function buildDraftRoomViewModel(input: {
     teams,
     players: available,
     recentPurchase: latest ? {
+      playerId: latest.playerId,
+      rosterId: latest.rosterId,
       playerName: metadata.get(latest.playerId)?.name ?? projectionById.get(latest.playerId)?.name ?? `Unknown player ${latest.playerId}`,
       teamName: teams.find((team) => team.rosterId === latest.rosterId)?.name ?? `Roster ${latest.rosterId}`,
       amount: latest.amount,
       local: latest.source === "local",
     } : null,
-    localCorrections: input.localCorrections.map((purchase) => ({
+    localCorrections: effective.active.map((purchase) => ({
       playerId: purchase.playerId,
       playerName: metadata.get(purchase.playerId)?.name ?? projectionById.get(purchase.playerId)?.name ?? `Unknown player ${purchase.playerId}`,
       teamName: teams.find((team) => team.rosterId === purchase.rosterId)?.name ?? `Roster ${purchase.rosterId}`,
       amount: purchase.amount,
     })),
+    ignoredCorrections: effective.ignored.map((purchase) => ({
+      playerId: purchase.playerId,
+      playerName: metadata.get(purchase.playerId)?.name ?? projectionById.get(purchase.playerId)?.name ?? `Unknown player ${purchase.playerId}`,
+      teamName: teams.find((team) => team.rosterId === purchase.rosterId)?.name ?? `Roster ${purchase.rosterId}`,
+      amount: purchase.amount,
+      reason: "Ignored because final Sleeper results are authoritative.",
+    })),
+    dataWarnings: [
+      ...(unjoinable.length
+        ? [`${unjoinable.length} purchase${unjoinable.length === 1 ? "" : "s"} could not be joined to player position data.`]
+        : []),
+      ...(rebuilt.unownedPurchases.length
+        ? [`${rebuilt.unownedPurchases.length} purchase${rebuilt.unownedPurchases.length === 1 ? "" : "s"} referenced an unknown roster.`]
+        : []),
+    ],
     emptyMessage: valuationError ?? (input.projections.length === 0
       ? "No projections are available. Import a CSV in strategy setup or retry later."
       : available.length === 0

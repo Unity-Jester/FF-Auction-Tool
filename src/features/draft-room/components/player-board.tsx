@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import type { Position } from "@/domain/league/types";
 import type { DraftRoomPlayer } from "../model";
 import styles from "../draft-room.module.css";
@@ -8,7 +8,9 @@ import styles from "../draft-room.module.css";
 const positions: Array<Position | "ALL"> = ["ALL", "QB", "RB", "WR", "TE", "K", "DEF"];
 type Sort = "max" | "adjusted" | "base" | "points";
 
-export function PlayerBoard({
+const PAGE_SIZE = 80;
+
+export const PlayerBoard = memo(function PlayerBoard({
   players,
   selectedPlayerId,
   onSelectPlayer,
@@ -20,6 +22,7 @@ export function PlayerBoard({
   const [query, setQuery] = useState("");
   const [position, setPosition] = useState<Position | "ALL">("ALL");
   const [sort, setSort] = useState<Sort>("max");
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const filtered = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
     return players
@@ -34,12 +37,16 @@ export function PlayerBoard({
         return right - left || a.name.localeCompare(b.name);
       });
   }, [players, position, query, sort]);
+  const visible = filtered.slice(0, visibleCount);
   const move = (currentId: string, delta: number) => {
     const index = filtered.findIndex((player) => player.id === currentId);
     const next = filtered[Math.max(0, Math.min(filtered.length - 1, index + delta))];
     if (next) {
+      if (index + delta >= visibleCount) {
+        setVisibleCount((count) => count + PAGE_SIZE);
+      }
       onSelectPlayer(next.id);
-      document.getElementById(`player-${next.id}`)?.focus();
+      requestAnimationFrame(() => document.getElementById(`player-${next.id}`)?.focus());
     }
   };
   return (
@@ -54,13 +61,19 @@ export function PlayerBoard({
           <input
             type="search"
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setVisibleCount(PAGE_SIZE);
+            }}
             placeholder="Search name or team"
           />
         </label>
         <label className={styles.sort}>
           <span>Sort</span>
-          <select value={sort} onChange={(event) => setSort(event.target.value as Sort)}>
+          <select value={sort} onChange={(event) => {
+            setSort(event.target.value as Sort);
+            setVisibleCount(PAGE_SIZE);
+          }}>
             <option value="max">My max bid</option>
             <option value="adjusted">Adjusted value</option>
             <option value="base">Base value</option>
@@ -73,7 +86,10 @@ export function PlayerBoard({
               type="button"
               key={item}
               aria-pressed={position === item}
-              onClick={() => setPosition(item)}
+              onClick={() => {
+                setPosition(item);
+                setVisibleCount(PAGE_SIZE);
+              }}
             >
               {item === "ALL" ? "All" : item}
             </button>
@@ -86,7 +102,7 @@ export function PlayerBoard({
             <tr><th>Player</th><th>Proj</th><th>Base</th><th>Adjusted</th><th>My max</th></tr>
           </thead>
           <tbody>
-            {filtered.map((player) => (
+            {visible.map((player) => (
               <tr
                 key={player.id}
                 aria-selected={selectedPlayerId === player.id}
@@ -96,7 +112,10 @@ export function PlayerBoard({
                   <button
                     id={`player-${player.id}`}
                     type="button"
-                    onClick={() => onSelectPlayer(player.id)}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onSelectPlayer(player.id);
+                    }}
                     onKeyDown={(event) => {
                       if (event.key === "ArrowDown") { event.preventDefault(); move(player.id, 1); }
                       if (event.key === "ArrowUp") { event.preventDefault(); move(player.id, -1); }
@@ -115,7 +134,16 @@ export function PlayerBoard({
           </tbody>
         </table>
         {filtered.length === 0 && <p className={styles.empty}>No players match these filters.</p>}
+        {visibleCount < filtered.length && (
+          <button
+            className={styles.loadMore}
+            type="button"
+            onClick={() => setVisibleCount((count) => count + PAGE_SIZE)}
+          >
+            Load {Math.min(PAGE_SIZE, filtered.length - visibleCount)} more players
+          </button>
+        )}
       </div>
     </section>
   );
-}
+});

@@ -75,6 +75,37 @@ describe("reconcileDraft", () => {
     expect(resolved.localCorrections).toEqual([]);
   });
 
+  it("retires a delayed local correction even when Sleeper assigns a different final pick number", () => {
+    const correction = purchase({
+      amount: 37,
+      pickNo: 99,
+      source: "local",
+      createdAt: null,
+    });
+    const previous = { snapshot: snapshot([purchase()]), localCorrections: [correction] };
+
+    const resolved = reconcileDraft(
+      previous,
+      snapshot([purchase({ amount: 37, pickNo: 14 })]),
+    );
+
+    expect(resolved.localCorrections).toEqual([]);
+  });
+
+  it("keeps only one authoritative record for a player when Sleeper repeats or revises it", () => {
+    const result = reconcileDraft(
+      { snapshot: snapshot([]), localCorrections: [] },
+      snapshot([
+        purchase({ rosterId: 1, amount: 25, pickNo: 1 }),
+        purchase({ rosterId: 2, amount: 31, pickNo: 2 }),
+      ]),
+    );
+
+    expect(result.snapshot.purchases).toEqual([
+      purchase({ rosterId: 2, amount: 31, pickNo: 2 }),
+    ]);
+  });
+
   it("orders equal picks by timestamp epoch with missing timestamps last", () => {
     const result = reconcileDraft(
       { snapshot: snapshot([]), localCorrections: [] },

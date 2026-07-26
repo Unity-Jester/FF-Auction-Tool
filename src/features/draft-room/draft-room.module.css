@@ -41,6 +41,13 @@
   text-transform: uppercase;
 }
 .topMeta { gap: 1rem; }
+.changeRoster {
+  min-height: var(--target-size);
+  border: 0;
+  background: transparent;
+  color: var(--color-text-muted);
+  text-decoration: underline;
+}
 .draftState {
   padding-right: 1rem;
   border-right: 1px solid var(--color-line);
@@ -197,8 +204,13 @@
 .rosterList { display: grid; }
 .rosterPlayer { display: grid; min-height: 3rem; grid-template-columns: 2.3rem 1fr auto; gap: .55rem; border-bottom: 1px solid var(--color-line); font-size: .75rem; }
 .rosterPlayer > span { color: var(--color-text-muted); font-family: var(--font-mono); }
+.editPurchase { grid-column: 2 / 4; justify-self: start; border: 0; background: transparent; color: var(--color-text-muted); text-decoration: underline; }
 .correction { display: flex; grid-column: 2 / 4; padding: 0 0 .5rem; justify-content: space-between; align-items: center; color: #ffc561; }
 .correction button { min-height: 2rem; border: 0; background: transparent; color: var(--color-text); text-decoration: underline; }
+.ignoredCorrection { display: flex; padding: .6rem 0; justify-content: space-between; gap: .5rem; border-top: 1px solid var(--color-line); color: #ffc561; }
+.ignoredCorrection small, .ignoredCorrection small span { display: grid; gap: .2rem; }
+.ignoredCorrection small span { color: var(--color-text-muted); }
+.ignoredCorrection button { border: 0; background: transparent; color: var(--color-text); text-decoration: underline; }
 .leagueList { margin-top: 1rem; }
 .leagueList details { border-top: 1px solid var(--color-line); }
 .leagueList summary { display: grid; min-height: 3.5rem; align-content: center; cursor: pointer; }
@@ -216,6 +228,8 @@
 .correctionControl { margin-top: .4rem; }
 .correctionControl form { display: flex; margin-top: .5rem; gap: .5rem; align-items: end; }
 .correctionControl label { display: grid; gap: .2rem; color: var(--color-text-muted); font: .65rem var(--font-mono); text-transform: uppercase; }
+.correctionError { margin: .4rem 0 0; color: #ff867b; font-size: .75rem; }
+.loadMore { width: 100%; min-height: var(--target-size); border: 0; border-bottom: 1px solid var(--color-line); background: var(--color-surface); color: var(--color-text); }
 .correctionControl form button, .blocking button {
   min-height: 2.5rem; padding: 0 .8rem; border: 0; border-radius: var(--radius);
   background: var(--color-accent); color: var(--color-accent-ink); font-weight: 750;
@@ -240,6 +254,8 @@
 .loader { width: 1.2rem; height: 1.2rem; margin-bottom: 1rem; border: 2px solid var(--color-line); border-top-color: var(--color-accent); border-radius: 50%; animation: spin .8s linear infinite; }
 .sync button.criticalAction,
 .correction button.criticalAction,
+.ignoredCorrection button.criticalAction,
+.correctionControl > button.criticalAction,
 .correctionControl form button.criticalAction {
   min-height: var(--target-size);
 }

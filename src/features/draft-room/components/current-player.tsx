@@ -2,12 +2,14 @@ import type { DraftRoomPlayer, DraftRoomViewModel } from "../model";
 import styles from "../draft-room.module.css";
 import { ValueBreakdown } from "./value-breakdown";
 
-export function CurrentPlayer({
+export const CurrentPlayer = memo(function CurrentPlayer({
   player,
   recentPurchase,
+  onEditRecentPurchase,
 }: {
   player: DraftRoomPlayer | null;
   recentPurchase: DraftRoomViewModel["recentPurchase"];
+  onEditRecentPurchase?: (playerId: string) => void;
 }) {
   return (
     <section className={styles.current} aria-label="Selected player">
@@ -52,8 +54,17 @@ export function CurrentPlayer({
           <span>Latest purchase · ${recentPurchase.amount}</span>
           <strong>{recentPurchase.playerName}</strong>
           <span>{recentPurchase.teamName}{recentPurchase.local ? " · local correction" : ""}</span>
+          {onEditRecentPurchase && (
+            <button
+              type="button"
+              onClick={() => onEditRecentPurchase(recentPurchase.playerId)}
+            >
+              Edit latest purchase
+            </button>
+          )}
         </div>
       )}
     </section>
   );
-}
+});
+import { memo } from "react";

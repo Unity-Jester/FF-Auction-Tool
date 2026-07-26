@@ -1,13 +1,16 @@
 import Link from "next/link";
+import { memo } from "react";
 import type { DraftRoomViewModel } from "../model";
 import styles from "../draft-room.module.css";
 
-export function MyRoster({
+export const MyRoster = memo(function MyRoster({
   model,
   onReverseCorrection,
+  onEditPurchase,
 }: {
   model: DraftRoomViewModel;
   onReverseCorrection?: (playerId: string) => void;
+  onEditPurchase?: (playerId: string) => void;
 }) {
   const team = model.teams.find((candidate) => candidate.rosterId === model.selectedRosterId);
   if (!team) return null;
@@ -31,6 +34,16 @@ export function MyRoster({
             <span>{player.position ?? "?"}</span>
             <strong>{player.name}</strong>
             <span>{player.amount === null ? "—" : `$${player.amount}`}</span>
+            {onEditPurchase && model.draftStatus !== "complete" && (
+              <button
+                className={styles.editPurchase}
+                type="button"
+                aria-label={`Edit purchase for ${player.name}`}
+                onClick={() => onEditPurchase(player.id)}
+              >
+                Edit
+              </button>
+            )}
             {player.local && (
               <div className={styles.correction}>
                 <small>Local correction</small>
@@ -62,6 +75,28 @@ export function MyRoster({
             </button>
           </div>
         ))}
+      {model.ignoredCorrections.map((correction) => (
+        <div key={correction.playerId} className={styles.ignoredCorrection}>
+          <small>
+            <strong>Ignored local conflict</strong> · {correction.playerName} · ${correction.amount}
+            <span>{correction.reason}</span>
+          </small>
+          <button
+            className={styles.criticalAction}
+            type="button"
+            aria-label={`Reverse ignored correction for ${correction.playerName}`}
+            onClick={() => onReverseCorrection?.(correction.playerId)}
+          >
+            Reverse
+          </button>
+        </div>
+      ))}
     </section>
   );
-}
+}, (previous, next) =>
+  previous.model.draftStatus === next.model.draftStatus &&
+  previous.model.selectedRosterId === next.model.selectedRosterId &&
+  previous.model.teams === next.model.teams &&
+  previous.model.localCorrections === next.model.localCorrections &&
+  previous.model.ignoredCorrections === next.model.ignoredCorrections,
+);

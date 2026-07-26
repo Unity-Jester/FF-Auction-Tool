@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 
 import type { LeagueConfig, Position } from "@/domain/league/types";
 import type { PlayerPreference, StrategyConfig } from "@/domain/strategy/types";
-import { saveSession } from "@/persistence/session-storage";
+import { loadSession, saveSession } from "@/persistence/session-storage";
 import { defaultStrategy } from "../default-strategies";
 
 const positions: Position[] = ["QB", "RB", "WR", "TE", "K", "DEF"];
@@ -24,7 +24,10 @@ export function StrategyBuilder({
   league: LeagueConfig;
 }) {
   const router = useRouter();
-  const [strategy, setStrategy] = useState(() => defaultStrategy(league));
+  const [savedSession] = useState(() => loadSession(draftId));
+  const [strategy, setStrategy] = useState(
+    () => savedSession?.strategy ?? defaultStrategy(league),
+  );
   const [player, setPlayer] = useState("");
   const [manualValue, setManualInput] = useState("");
   const total = useMemo(
@@ -70,12 +73,16 @@ export function StrategyBuilder({
   const enter = () => {
     if (!valid) return;
     saveSession({
+      ...savedSession,
       version: 1,
       draftId,
       strategy,
-      preferences: strategy.preferences,
-      localCorrections: [],
-      csvProjectionOverrides: [],
+      preferences: {
+        ...(savedSession?.preferences ?? {}),
+        ...strategy.preferences,
+      },
+      localCorrections: savedSession?.localCorrections ?? [],
+      csvProjectionOverrides: savedSession?.csvProjectionOverrides ?? [],
       savedAt: new Date().toISOString(),
     });
     router.push(`/draft/${draftId}`);
@@ -92,7 +99,12 @@ export function StrategyBuilder({
           <button
             key={preset}
             className={strategy.archetype === preset ? "selected" : ""}
-            onClick={() => setStrategy(defaultStrategy(league, preset))}
+            onClick={() => setStrategy((current) => ({
+              ...defaultStrategy(league, preset),
+              preferences: current.preferences,
+              projectionOverrides: current.projectionOverrides,
+              valueOverrides: current.valueOverrides,
+            }))}
           >
             {label}
           </button>

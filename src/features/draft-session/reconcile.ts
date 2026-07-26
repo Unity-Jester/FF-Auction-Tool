@@ -5,8 +5,16 @@ export type DraftSessionState = {
   localCorrections: DraftPurchase[];
 };
 
-const identity = (purchase: DraftPurchase) =>
-  JSON.stringify([purchase.draftId, purchase.playerId, purchase.rosterId]);
+const playerIdentity = (purchase: DraftPurchase) =>
+  JSON.stringify([purchase.draftId, purchase.playerId]);
+
+const settledIdentity = (purchase: DraftPurchase) =>
+  JSON.stringify([
+    purchase.draftId,
+    purchase.playerId,
+    purchase.rosterId,
+    purchase.amount,
+  ]);
 
 const identifier = (value: unknown): value is string =>
   typeof value === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(value);
@@ -53,12 +61,13 @@ function canonicalPurchases(
   minBid: number,
 ): DraftPurchase[] {
   const unique = new Map<string, DraftPurchase>();
-  for (const purchase of purchases) {
-    if (!validPurchase(purchase, source, draftId, minBid)) continue;
-    const key = identity(purchase);
-    const prior = unique.get(key);
-    // A duplicate from the same response is ignored; the first record is stable.
-    if (!prior) unique.set(key, purchase);
+  const valid = purchases
+    .filter((purchase) => validPurchase(purchase, source, draftId, minBid))
+    .sort(comparePurchases);
+  for (const purchase of valid) {
+    // Sleeper can repeat a player while a pick is settling. The latest
+    // canonical record wins so a player can never have two effective owners.
+    unique.set(playerIdentity(purchase), purchase);
   }
   return [...unique.values()].sort(comparePurchases);
 }
@@ -74,12 +83,7 @@ function equivalentPurchases(a: DraftPurchase[], b: DraftPurchase[]) {
 }
 
 function exactMatch(local: DraftPurchase, sleeper: DraftPurchase) {
-  return (
-    identity(local) === identity(sleeper) &&
-    local.amount === sleeper.amount &&
-    local.pickNo === sleeper.pickNo &&
-    local.keeper === sleeper.keeper
-  );
+  return settledIdentity(local) === settledIdentity(sleeper);
 }
 
 /** Reconciles a Sleeper snapshot without mixing in locally corrected purchases. */

@@ -33,6 +33,7 @@ export type CalculateBaseValuesInput = {
   teams: TeamDraftState[];
   replacementLevels: ReplacementLevels;
   preDraftDisplayValues?: ReadonlyMap<string, number>;
+  auctionComplete?: boolean;
 };
 
 type CanonicalPlayer = {
@@ -384,6 +385,7 @@ export function calculateBaseValues({
   teams,
   replacementLevels,
   preDraftDisplayValues,
+  auctionComplete = false,
 }: CalculateBaseValuesInput): Map<string, BasePlayerValue> {
   if (!Number.isSafeInteger(league.minBid) || league.minBid <= 0) {
     throw new Error("League minimum bid must be a positive integer");
@@ -435,16 +437,21 @@ export function calculateBaseValues({
     (player) => !isCapped(player, league),
   );
   const extraPool = remainingBudget - minimumReserve;
+  // Once every roster is full there are no remaining slots to allocate money
+  // to. Keep the real final balances intact and value the undrafted review pool
+  // at zero instead of inventing a live-draft budget.
+  const allocatableExtraPool =
+    auctionComplete && openSlots === 0 ? 0 : extraPool;
   const weights = normalizedWeights(uncappedPlayers);
 
-  if (extraPool > 0 && uncappedPlayers.length === 0) {
+  if (allocatableExtraPool > 0 && uncappedPlayers.length === 0) {
     throw new Error(
       "Extra dollars cannot be allocated because every player is capped",
     );
   }
 
   let fallbackPlayerId: string | undefined;
-  if (extraPool > 0 && weights.maximum === 0) {
+  if (allocatableExtraPool > 0 && weights.maximum === 0) {
     fallbackPlayerId = [...uncappedPlayers].sort(
       (left, right) =>
         right.points - left.points || compareIds(left.playerId, right.playerId),
@@ -462,9 +469,9 @@ export function calculateBaseValues({
     if (!isCapped(player, league)) {
       const normalizedWeight = weights.byId.get(player.playerId) ?? 0;
       if (weights.sum > 0 && normalizedWeight > 0) {
-        extra = extraPool * (normalizedWeight / weights.sum);
+        extra = allocatableExtraPool * (normalizedWeight / weights.sum);
       } else if (player.playerId === fallbackPlayerId) {
-        extra = extraPool;
+        extra = allocatableExtraPool;
       }
     }
     baseValues.set(player.playerId, league.minBid + extra);
@@ -473,7 +480,7 @@ export function calculateBaseValues({
   const roundedDraftableValues = allocateDisplayValues(
     draftablePlayers,
     league.minBid,
-    extraPool,
+    allocatableExtraPool,
     weights.byId,
     fallbackPlayerId,
   );

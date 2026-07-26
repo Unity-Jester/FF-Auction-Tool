@@ -1,9 +1,11 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createLeagueConfig } from "@/domain/league/defaults";
 import { StrategyBuilder } from "@/features/strategy/components/strategy-builder";
+import { defaultStrategy } from "@/features/strategy/default-strategies";
+import { loadSession, saveSession } from "@/persistence/session-storage";
 
 const push = vi.fn();
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
@@ -18,6 +20,10 @@ const league = createLeagueConfig({
 });
 
 describe("StrategyBuilder", () => {
+  afterEach(() => {
+    window.localStorage.clear();
+    push.mockClear();
+  });
   it("switches to a stars-and-scrubs spending curve", async () => {
     const user = userEvent.setup();
     render(<StrategyBuilder draftId="123456789012345678" league={league} />);
@@ -103,5 +109,71 @@ describe("StrategyBuilder", () => {
       ),
     ).toContain("recommended");
     expect(push).toHaveBeenCalledWith("/draft/123456789012345678");
+  });
+
+  it("loads an existing plan and preserves its preferences and manual values", () => {
+    const draftId = "223456789012345678";
+    const existing = defaultStrategy(league);
+    existing.preferences = { "Bijan Robinson": "target" };
+    existing.valueOverrides = { "Bijan Robinson": 61 };
+    saveSession({
+      version: 1,
+      draftId,
+      strategy: existing,
+      preferences: { "Ja'Marr Chase": "avoid" },
+      localCorrections: [],
+      csvProjectionOverrides: [],
+      savedAt: "2026-07-26T12:00:00.000Z",
+    });
+
+    render(<StrategyBuilder draftId={draftId} league={league} />);
+
+    expect(screen.getByText("Bijan Robinson · Target")).toBeInTheDocument();
+    expect(screen.getByText("Bijan Robinson · Manual $61")).toBeInTheDocument();
+  });
+
+  it("merges edits without erasing corrections, CSV overrides, or session preferences", async () => {
+    const user = userEvent.setup();
+    const draftId = "323456789012345678";
+    const existing = defaultStrategy(league);
+    const correction = {
+      draftId,
+      playerId: "p1",
+      rosterId: 1,
+      amount: 21,
+      pickNo: 1,
+      createdAt: null,
+      source: "local" as const,
+      keeper: false,
+    };
+    const csv = {
+      playerId: "p2",
+      name: "CSV Player",
+      team: "NFL",
+      positions: ["RB" as const],
+      stats: { rushYards: 1000 },
+      source: "CSV",
+      updatedAt: "2026-07-26T12:00:00.000Z",
+    };
+    saveSession({
+      version: 1,
+      draftId,
+      strategy: existing,
+      preferences: { p3: "lock" },
+      localCorrections: [correction],
+      csvProjectionOverrides: [csv],
+      savedAt: "2026-07-26T12:00:00.000Z",
+    });
+
+    render(<StrategyBuilder draftId={draftId} league={league} />);
+    await user.type(screen.getByLabelText("Player preference"), "Bijan Robinson");
+    await user.click(screen.getByRole("button", { name: "Target player" }));
+    await user.click(screen.getByRole("button", { name: "Enter draft room" }));
+
+    expect(loadSession(draftId)).toEqual(expect.objectContaining({
+      localCorrections: [correction],
+      csvProjectionOverrides: [csv],
+      preferences: { p3: "lock", "Bijan Robinson": "target" },
+    }));
   });
 });

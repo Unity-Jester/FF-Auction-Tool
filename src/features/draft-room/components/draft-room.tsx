@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 
 import type { DraftPurchase, DraftSnapshot } from "@/domain/draft/types";
 import { defaultStrategy } from "@/features/strategy/default-strategies";
@@ -23,6 +23,22 @@ const tabs: Array<[Tab, string]> = [
   ["now", "Now"], ["players", "Players"], ["team", "My team"], ["league", "League"],
 ];
 const rosterKey = (draftId: string) => `sleeper-auction-companion:roster:${draftId}`;
+const mobileQuery = "(max-width: 767px)";
+
+function subscribeMobile(callback: () => void) {
+  if (typeof window === "undefined" || !window.matchMedia) return () => {};
+  const query = window.matchMedia(mobileQuery);
+  query.addEventListener("change", callback);
+  return () => query.removeEventListener("change", callback);
+}
+
+function useMobileLayout() {
+  return useSyncExternalStore(
+    subscribeMobile,
+    () => typeof window !== "undefined" && Boolean(window.matchMedia?.(mobileQuery).matches),
+    () => false,
+  );
+}
 
 export function DraftRoomView({
   model,
@@ -30,27 +46,92 @@ export function DraftRoomView({
   onSelectPlayer,
   onReverseCorrection,
   onAddCorrection,
+  onChangeRoster,
 }: {
   model: DraftRoomViewModel;
   onRetry: () => void;
   onSelectPlayer?: (playerId: string) => void;
   onReverseCorrection?: (playerId: string) => void;
   onAddCorrection?: (playerId: string, rosterId: number, amount: number) => void;
+  onChangeRoster?: () => void;
 }) {
   const [selectedPlayerId, setSelectedPlayerId] = useState(model.selectedPlayerId);
   const [tab, setTab] = useState<Tab>("now");
-  const [correctionOpen, setCorrectionOpen] = useState(false);
+  const [correctionPlayerId, setCorrectionPlayerId] = useState<string | null>(null);
   const [correctionTeam, setCorrectionTeam] = useState(String(model.selectedRosterId));
   const [correctionAmount, setCorrectionAmount] = useState("");
+  const [correctionError, setCorrectionError] = useState<string | null>(null);
+  const isMobile = useMobileLayout();
   const effectiveSelectedPlayerId = model.players.some((player) => player.id === selectedPlayerId)
     ? selectedPlayerId
     : model.selectedPlayerId;
-  const select = (playerId: string) => {
+  const select = useCallback((playerId: string) => {
     setSelectedPlayerId(playerId);
     onSelectPlayer?.(playerId);
-  };
+  }, [onSelectPlayer]);
   const selected = model.players.find((player) => player.id === effectiveSelectedPlayerId) ?? null;
   const show = (target: Tab) => tab === target ? styles.mobileActive : "";
+  const existingPurchase = model.teams
+    .flatMap((team) => team.players.map((player) => ({ team, player })))
+    .find(({ player }) => player.id === correctionPlayerId);
+  const openCorrection = useCallback((playerId: string) => {
+    const existing = model.teams
+      .flatMap((team) => team.players.map((player) => ({ team, player })))
+      .find(({ player }) => player.id === playerId);
+    setCorrectionPlayerId(playerId);
+    setCorrectionTeam(String(existing?.team.rosterId ?? model.selectedRosterId));
+    setCorrectionAmount(existing?.player.amount === null || existing?.player.amount === undefined
+      ? ""
+      : String(existing.player.amount));
+    setCorrectionError(null);
+    setTab("now");
+  }, [model.selectedRosterId, model.teams]);
+  const closeCorrection = () => {
+    setCorrectionPlayerId(null);
+    setCorrectionAmount("");
+    setCorrectionError(null);
+  };
+  const selectedCorrectionTeam = model.teams.find(
+    (team) => team.rosterId === Number(correctionTeam),
+  );
+  const correctionMaximum = selectedCorrectionTeam
+    ? existingPurchase?.team.rosterId === selectedCorrectionTeam.rosterId
+      ? selectedCorrectionTeam.remainingBudget +
+        (existingPurchase.player.amount ?? 0) -
+        Math.max(0, selectedCorrectionTeam.openSlots) * model.minBid
+      : selectedCorrectionTeam.remainingBudget -
+        Math.max(0, selectedCorrectionTeam.openSlots - 1) * model.minBid
+    : 0;
+  const activateTab = (next: Tab) => {
+    setTab(next);
+    document.getElementById(`draft-tab-${next}`)?.focus();
+  };
+  const handleTabKey = (event: React.KeyboardEvent<HTMLButtonElement>, current: Tab) => {
+    const index = tabs.findIndex(([id]) => id === current);
+    let next: Tab | null = null;
+    if (event.key === "ArrowRight") next = tabs[(index + 1) % tabs.length][0];
+    if (event.key === "ArrowLeft") next = tabs[(index - 1 + tabs.length) % tabs.length][0];
+    if (event.key === "Home") next = tabs[0][0];
+    if (event.key === "End") next = tabs[tabs.length - 1][0];
+    if (next) {
+      event.preventDefault();
+      activateTab(next);
+    }
+  };
+  const panel = (target: Tab, className: string, content: React.ReactNode, aside = false) => {
+    if (isMobile && tab !== target) return null;
+    const Component = aside ? "aside" : "div";
+    return (
+      <Component
+        id={`draft-panel-${target}`}
+        role="tabpanel"
+        aria-labelledby={`draft-tab-${target}`}
+        className={`${className} ${show(target)}`}
+      >
+        {content}
+      </Component>
+    );
+  };
   return (
     <div className={styles.room}>
       <header className={styles.topbar}>
@@ -60,6 +141,7 @@ export function DraftRoomView({
         </div>
         <div className={styles.topMeta}>
           <span className={styles.draftState}>{model.draftStatus === "complete" ? "Draft complete" : model.draftStatus === "pre" ? "Pre-draft" : "Live draft"}</span>
+          {onChangeRoster && <button className={styles.changeRoster} type="button" onClick={onChangeRoster}>Change roster</button>}
           <SyncStatus status={model.syncStatus} lastUpdatedAt={model.lastUpdatedAt} onRetry={onRetry} />
         </div>
       </header>
@@ -71,14 +153,21 @@ export function DraftRoomView({
       {model.configurationNotice && (
         <p className={styles.notice} role="status">{model.configurationNotice}</p>
       )}
+      {model.dataWarnings.map((warning) => (
+        <p key={warning} className={styles.notice} role="status">{warning}</p>
+      ))}
       <nav className={styles.mobileTabs} role="tablist" aria-label="Draft room sections">
         {tabs.map(([id, label]) => (
           <button
             key={id}
             type="button"
+            id={`draft-tab-${id}`}
             role="tab"
             aria-selected={tab === id}
+            aria-controls={`draft-panel-${id}`}
+            tabIndex={tab === id ? 0 : -1}
             onClick={() => setTab(id)}
+            onKeyDown={(event) => handleTabKey(event, id)}
           >{label}</button>
         ))}
       </nav>
@@ -86,48 +175,69 @@ export function DraftRoomView({
         <p className={styles.complete}>Final Sleeper results are loaded. Values are preserved for review.</p>
       )}
       <div className={styles.workspace}>
-        <div className={`${styles.nowRegion} ${show("now")}`}>
-          <CurrentPlayer player={selected} recentPurchase={model.recentPurchase} />
-          {selected && onAddCorrection && model.draftStatus !== "complete" && (
+        {panel("now", styles.nowRegion, <>
+          <CurrentPlayer
+            player={selected}
+            recentPurchase={model.recentPurchase}
+            onEditRecentPurchase={onAddCorrection && model.draftStatus !== "complete" ? openCorrection : undefined}
+          />
+          {selected && onAddCorrection && model.draftStatus !== "complete" && correctionPlayerId === null && (
             <div className={styles.correctionControl}>
-              <button type="button" onClick={() => setCorrectionOpen((open) => !open)}>
-                {correctionOpen ? "Cancel correction" : "Add local purchase correction"}
+              <button className={styles.criticalAction} type="button" onClick={() => openCorrection(selected.id)}>
+                Add local purchase correction
               </button>
-              {correctionOpen && (
-                <form onSubmit={(event) => {
-                  event.preventDefault();
-                  const amount = Number(correctionAmount);
-                  if (Number.isSafeInteger(amount) && amount > 0) {
-                    onAddCorrection(selected.id, Number(correctionTeam), amount);
-                    setCorrectionOpen(false);
-                    setCorrectionAmount("");
-                  }
-                }}>
-                  <label>Assign to
-                    <select value={correctionTeam} onChange={(event) => setCorrectionTeam(event.target.value)}>
-                      {model.teams.map((team) => <option key={team.rosterId} value={team.rosterId}>{team.name}</option>)}
-                    </select>
-                  </label>
-                  <label>Sale price
-                    <input aria-label="Local sale price" type="number" min="1" required value={correctionAmount} onChange={(event) => setCorrectionAmount(event.target.value)} />
-                  </label>
-                  <button className={styles.criticalAction} type="submit">Save local correction</button>
-                </form>
-              )}
             </div>
           )}
-        </div>
-        <div className={`${styles.playersRegion} ${show("players")}`}>
-          {model.emptyMessage ? <p className={styles.emptyState}>{model.emptyMessage}</p> : (
-            <PlayerBoard players={model.players} selectedPlayerId={effectiveSelectedPlayerId} onSelectPlayer={select} />
+          {correctionPlayerId && onAddCorrection && model.draftStatus !== "complete" && (
+            <div className={styles.correctionControl}>
+              <button className={styles.criticalAction} type="button" onClick={closeCorrection}>Cancel correction</button>
+              <form noValidate onSubmit={(event) => {
+                event.preventDefault();
+                const amount = Number(correctionAmount);
+                if (!Number.isSafeInteger(amount)) {
+                  setCorrectionError("Enter a whole-dollar sale price.");
+                } else if (amount < model.minBid) {
+                  setCorrectionError(`The minimum bid is $${model.minBid}.`);
+                } else if (amount > correctionMaximum) {
+                  setCorrectionError(`The maximum legal price is $${Math.max(0, correctionMaximum)}.`);
+                } else {
+                  onAddCorrection(correctionPlayerId, Number(correctionTeam), amount);
+                  closeCorrection();
+                }
+              }}>
+                <label>Assign to
+                  <select aria-label="Assign to" value={correctionTeam} onChange={(event) => {
+                    setCorrectionTeam(event.target.value);
+                    setCorrectionError(null);
+                  }}>
+                    {model.teams.map((team) => <option key={team.rosterId} value={team.rosterId}>{team.name}</option>)}
+                  </select>
+                </label>
+                <label>Sale price
+                  <input aria-label="Local sale price" type="number" min={model.minBid} required value={correctionAmount} onChange={(event) => {
+                    setCorrectionAmount(event.target.value);
+                    setCorrectionError(null);
+                  }} />
+                </label>
+                <button className={styles.criticalAction} type="submit">Save local correction</button>
+              </form>
+              {correctionError && <p className={styles.correctionError} role="alert">{correctionError}</p>}
+            </div>
           )}
-        </div>
-        <aside className={`${styles.teamRegion} ${show("team")}`}>
-          <MyRoster model={model} onReverseCorrection={onReverseCorrection} />
-        </aside>
-        <aside className={`${styles.leagueRegion} ${show("league")}`}>
-          <LeagueRosters model={model} />
-        </aside>
+        </>)}
+        {panel("players", styles.playersRegion,
+          model.emptyMessage ? <p className={styles.emptyState}>{model.emptyMessage}</p> : (
+            <PlayerBoard players={model.players} selectedPlayerId={effectiveSelectedPlayerId} onSelectPlayer={select} />
+          )
+        )}
+        {panel("team", styles.teamRegion,
+          <MyRoster model={model} onReverseCorrection={onReverseCorrection} onEditPurchase={onAddCorrection ? openCorrection : undefined} />,
+          true,
+        )}
+        {panel("league", styles.leagueRegion,
+          <LeagueRosters model={model} onEditPurchase={onAddCorrection ? openCorrection : undefined} />,
+          true,
+        )}
       </div>
     </div>
   );
@@ -192,6 +302,8 @@ export function DraftRoom({ draftId }: { draftId: string }) {
     if (!session || !reconciled || reconciled.localCorrections === session.localCorrections) return;
     const next = { ...session, localCorrections: reconciled.localCorrections, savedAt: new Date().toISOString() };
     saveSession(next);
+    const update = window.setTimeout(() => setSession(next), 0);
+    return () => window.clearTimeout(update);
   }, [reconciled, session]);
   const validRoster = rosterId !== null && sync.data?.teams.some((team) => team.rosterId === rosterId);
   const valuationModel = useMemo(() => {
@@ -266,13 +378,20 @@ export function DraftRoom({ draftId }: { draftId: string }) {
     model={model}
     onRetry={() => sync.retry()}
     onSelectPlayer={setSelectedPlayerId}
+    onChangeRoster={() => {
+      try { localStorage.removeItem(rosterKey(draftId)); } catch {}
+      setRosterId(null);
+    }}
     onReverseCorrection={(playerId) => persistCorrections((session?.localCorrections ?? []).filter((purchase) => purchase.playerId !== playerId))}
     onAddCorrection={(playerId, owner, amount) => {
       const existing = session?.localCorrections ?? [];
-      const nextPick = Math.max(0, ...sync.data!.purchases.map((purchase) => purchase.pickNo), ...existing.map((purchase) => purchase.pickNo)) + 1;
+      const existingPurchase = existing.find((purchase) => purchase.playerId === playerId) ??
+        sync.data!.purchases.find((purchase) => purchase.playerId === playerId);
+      const nextPick = existingPurchase?.pickNo ??
+        Math.max(0, ...sync.data!.purchases.map((purchase) => purchase.pickNo), ...existing.map((purchase) => purchase.pickNo)) + 1;
       persistCorrections([...existing.filter((purchase) => purchase.playerId !== playerId), {
         draftId, playerId, rosterId: owner, amount, pickNo: nextPick,
-        createdAt: new Date().toISOString(), source: "local", keeper: false,
+        createdAt: new Date().toISOString(), source: "local", keeper: existingPurchase?.keeper ?? false,
       }]);
     }}
   />;
