@@ -459,6 +459,7 @@ export function buildDraftRoomViewModel(input: {
       teams.find((team) => team.rosterId === input.myRosterId)
         ?.maximumLegalBid ?? 0,
     configuredExtraReserve: 0,
+    unallocatableSurplus: 0,
   };
   return {
     draftId: input.snapshot.draftId,

@@ -79,6 +79,7 @@ const model = (overrides: Partial<DraftRoomViewModel> = {}): DraftRoomViewModel 
       hardLegalMaximum: 148,
       strategyMaximum: 143,
       configuredExtraReserve: 5,
+      unallocatableSurplus: 0,
     },
     inflation: {
       league: 1.08,
@@ -110,6 +111,30 @@ describe("DraftRoomView", () => {
     expect(within(now).getByText(/Bench: 2/i)).toBeInTheDocument();
     expect(within(now).getByText(/League inflation.*1\.08×/i)).toBeInTheDocument();
     expect(within(now).getByText(/RB inflation.*1\.12×/i)).toBeInTheDocument();
+  });
+
+  it("explains cap-constrained surplus without hiding live guidance", () => {
+    const lateDraft = model({
+      guidance: {
+        ...model().guidance,
+        budgetPace: {
+          ...model().guidance.budgetPace,
+          remainingBudget: 5,
+          hardLegalMaximum: 5,
+          strategyMaximum: 5,
+          unallocatableSurplus: 8,
+        },
+      },
+    });
+
+    render(<DraftRoomView model={lateDraft} onRetry={vi.fn()} />);
+
+    const now = screen.getByRole("region", { name: "Selected player" });
+    expect(within(now).getByText(/\$8 cannot be assigned/i)).toBeInTheDocument();
+    expect(
+      within(now).getByText(/\$1 kicker\/defense cap/i),
+    ).toBeInTheDocument();
+    expect(within(now).getByText("Best fits now")).toBeInTheDocument();
   });
 
   it("reveals a target and strategy explanation on demand", async () => {
@@ -516,6 +541,90 @@ describe("buildDraftRoomViewModel", () => {
     team: item.team,
     positions: [...item.positions],
   }));
+
+  it("keeps the full live room usable when only capped K slots remain", () => {
+    const league = {
+      ...completed.league,
+      teams: 2,
+      budget: 5,
+      starters: { QB: 0, RB: 0, WR: 0, TE: 0, K: 1, DEF: 0 },
+      bench: 0,
+      rosterSize: 1,
+      flex: [],
+      capKickerDefenseAtOne: true,
+    };
+    const snapshot: DraftSnapshot = {
+      draftId: "late-kicker-draft",
+      status: "drafting",
+      type: "auction",
+      league,
+      teams: [
+        {
+          rosterId: 1,
+          name: "Team 1",
+          remainingBudget: 5,
+          openSlots: 1,
+          playerIds: [],
+        },
+        {
+          rosterId: 2,
+          name: "Team 2",
+          remainingBudget: 5,
+          openSlots: 1,
+          playerIds: [],
+        },
+      ],
+      purchases: [],
+      lastUpdatedAt: "2026-07-26T12:00:00.000Z",
+    };
+    const kickerProjections: PlayerProjection[] = [
+      {
+        playerId: "k-a",
+        name: "Kicker A",
+        team: "ATL",
+        positions: ["K"],
+        stats: {},
+        source: "Regression fixture",
+        updatedAt: snapshot.lastUpdatedAt,
+      },
+      {
+        playerId: "k-b",
+        name: "Kicker B",
+        team: "BUF",
+        positions: ["K"],
+        stats: {},
+        source: "Regression fixture",
+        updatedAt: snapshot.lastUpdatedAt,
+      },
+    ];
+    const result = buildDraftRoomViewModel({
+      snapshot,
+      league,
+      strategy: defaultStrategy(league),
+      preferences: {},
+      projections: kickerProjections,
+      projectionSource: "Regression fixture",
+      projectionStale: false,
+      playerSnapshot: kickerProjections.map((item) => ({
+        playerId: item.playerId,
+        name: item.name,
+        team: item.team,
+        positions: [...item.positions],
+      })),
+      myRosterId: 1,
+      localCorrections: [],
+      syncStatus: "fresh",
+      lastUpdatedAt: snapshot.lastUpdatedAt,
+    });
+
+    expect(result.emptyMessage).toBeNull();
+    expect(result.guidance.budgetPace.unallocatableSurplus).toBe(8);
+    expect(result.players.map((player) => player.baseValue)).toEqual([1, 1]);
+
+    render(<DraftRoomView model={result} onRetry={vi.fn()} />);
+    expect(screen.getByText(/\$8 cannot be assigned/i)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Best fits now" })).toBeVisible();
+  });
 
   it("keeps completed-draft values reviewable when full rosters retain unused dollars", () => {
     const result = buildDraftRoomViewModel({

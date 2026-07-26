@@ -55,6 +55,13 @@ export const CurrentPlayer = memo(function CurrentPlayer({
               ? ` · ${guidance.budgetPace.configuredExtraReserve} extra strategy reserve beyond minimum fill bids`
               : ""}
           </p>
+          {guidance.budgetPace.unallocatableSurplus > 0 ? (
+            <p className={styles.bidLimits}>
+              Across the league, ${guidance.budgetPace.unallocatableSurplus}{" "}
+              cannot be assigned while every remaining eligible slot is limited
+              by the $1 kicker/defense cap. Team balances remain unchanged.
+            </p>
+          ) : null}
           <section className={styles.liveGuidance} aria-labelledby="best-fits-title">
             <h2 id="best-fits-title">Best fits now</h2>
             {guidance.bestFits.length > 0 ? (

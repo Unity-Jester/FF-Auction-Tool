@@ -5,6 +5,7 @@ import type { Position } from "@/domain/league/types";
 import type { StrategyConfig } from "@/domain/strategy/types";
 import {
   calculateBaseValues,
+  calculateBaseValuesWithMetadata,
   type CalculateBaseValuesInput,
 } from "@/domain/valuation/base-values";
 import type {
@@ -151,11 +152,13 @@ describe("allocateLargestRemainders", () => {
 
 describe("calculateBaseValues", () => {
   it("allocates the exact live budget over the draftable pool and caps kickers", () => {
-    const values = calculateBaseValues(baseInput());
+    const result = calculateBaseValuesWithMetadata(baseInput());
+    const values = result.values;
     const draftable = [...values.values()].filter(
       (value) => value.displayValue > 0,
     );
 
+    expect(result.metadata.unallocatableSurplus).toBe(0);
     expect(draftable).toHaveLength(7);
     expect(draftable.reduce((sum, value) => sum + value.displayValue, 0)).toBe(
       34,
@@ -318,24 +321,32 @@ describe("calculateBaseValues", () => {
     expect(values.get("rb-c")!.displayValue).toBe(0);
   });
 
-  it("throws when every draftable player is capped and extra dollars remain", () => {
-    expect(() =>
-      calculateBaseValues(
-        baseInput({
-          players: [player("k-a", "K", 20), player("k-b", "K", 10)],
-          teams: [
-            {
-              rosterId: 1,
-              name: "One",
-              remainingBudget: 5,
-              openSlots: 2,
-              playerIds: [],
-            },
-          ],
-          replacementLevels: replacementLevels({ K: 0 }, { K: 0 }),
-        }),
+  it("values an all-capped pool at $1 and reports the exact unallocatable surplus", () => {
+    const result = calculateBaseValuesWithMetadata(
+      baseInput({
+        players: [player("k-a", "K", 20), player("k-b", "K", 10)],
+        teams: [
+          {
+            rosterId: 1,
+            name: "One",
+            remainingBudget: 5,
+            openSlots: 2,
+            playerIds: [],
+          },
+        ],
+        replacementLevels: replacementLevels({ K: 0 }, { K: 0 }),
+      }),
+    );
+
+    expect(result.metadata).toEqual({ unallocatableSurplus: 3 });
+    expect(result.values.get("k-a")!.displayValue).toBe(1);
+    expect(result.values.get("k-b")!.displayValue).toBe(1);
+    expect(
+      [...result.values.values()].reduce(
+        (sum, value) => sum + value.displayValue,
+        0,
       ),
-    ).toThrow(/capped|allocate/i);
+    ).toBe(2);
   });
 
   it("merges duplicate eligibility and values multi-position players independently of input order", () => {

@@ -163,6 +163,61 @@ test.describe("guest auction journey", () => {
     await expect(myTeam).not.toContainText("Local correction");
   });
 
+  test("shows authoritative Sleeper values beside a differing local correction and resolves it without duplication", async ({
+    page,
+  }, testInfo) => {
+    test.skip(testInfo.project.name !== "desktop-1440");
+    await enterDraftRoom(page);
+
+    await page.getByRole("button", { name: /Bijan Robinson/i }).click();
+    await page
+      .getByRole("button", { name: "Add local purchase correction" })
+      .click();
+    await page.getByLabel("Assign to").selectOption("1");
+    await page.getByLabel("Local sale price").fill("7");
+    await page.getByRole("button", { name: "Save local correction" }).click();
+
+    const myTeam = page
+      .getByRole("heading", { name: "Team 1" })
+      .locator("xpath=ancestor::section");
+    const teamTwo = page
+      .getByRole("region", { name: "League rosters" })
+      .getByText("Team 2", { exact: true })
+      .locator("xpath=ancestor::details");
+    await expect(myTeam).toContainText("Bijan Robinson");
+    await expect(myTeam).toContainText("Local correction");
+    await expect(myTeam).toContainText("Remaining$43");
+
+    await setFixture(page, 2);
+    await page.reload();
+
+    await expect(myTeam).toContainText(
+      "Sleeper authoritative · Team 2 · $24",
+    );
+    await expect(myTeam).toContainText("Local estimate · Team 1 · $7");
+    await expect(myTeam).toContainText(
+      "the differing local correction is visible but does not change values",
+    );
+    await expect(myTeam).toContainText("Remaining$10");
+    await expect(teamTwo).toContainText("$26");
+    await expect(teamTwo.getByText("Bijan Robinson")).toHaveCount(1);
+    await expect(page.getByLabel("Selected player")).toContainText(
+      "Strategy ceiling $8 · Hard legal max $8",
+    );
+
+    await myTeam
+      .getByRole("button", {
+        name: "Remove local conflict for Bijan Robinson",
+      })
+      .click();
+    await expect(myTeam).not.toContainText("Local conflict");
+    await expect(myTeam.getByText("Trey McBride")).toHaveCount(1);
+    await expect(myTeam).not.toContainText("Bijan Robinson");
+    await expect(myTeam).toContainText("Remaining$10");
+    await expect(teamTwo).toContainText("$26");
+    await expect(teamTwo.getByText("Bijan Robinson")).toHaveCount(1);
+  });
+
   test("loads the completed fixture with exact final balances and no duplicate players", async ({
     page,
   }, testInfo) => {

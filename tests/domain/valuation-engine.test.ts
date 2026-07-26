@@ -984,6 +984,60 @@ describe("runValuationEngine", () => {
     expect(result.get("rb-1")!.recommendedMaxBid).toBe(0);
   });
 
+  it("returns finite cap-constrained surplus metadata for a K-only late draft", () => {
+    const league = createLeagueConfig({
+      teams: 2,
+      budget: 10,
+      minBid: 1,
+      starters: { QB: 0, RB: 0, WR: 0, TE: 0, K: 1, DEF: 0 },
+      bench: 0,
+      flex: [],
+      receptionPoints: 0.5,
+      capKickerDefenseAtOne: true,
+    });
+    const result = runValuationEngineWithMetadata({
+      league,
+      strategy: strategy({
+        positionBudgets: { QB: 0, RB: 0, WR: 0, TE: 0, K: 10, DEF: 0 },
+        minReserve: 1,
+        valueOverrides: { "k-a": 8 },
+      }),
+      players: [player("k-a", "K", 20), player("k-b", "K", 10)],
+      teams: [
+        {
+          rosterId: 1,
+          name: "Me",
+          remainingBudget: 5,
+          openSlots: 1,
+          playerIds: [],
+        },
+        {
+          rosterId: 2,
+          name: "Them",
+          remainingBudget: 5,
+          openSlots: 1,
+          playerIds: [],
+        },
+      ],
+      replacementLevels: {
+        ...levels(),
+        starterRanks: { ...levels().starterRanks, K: 2 },
+        benchRanks: { ...levels().benchRanks, K: 2 },
+      },
+      myRosterId: 1,
+      purchases: [],
+    });
+
+    expect(result.values.get("k-a")!.displayValue).toBe(1);
+    expect(result.values.get("k-b")!.displayValue).toBe(1);
+    expect(result.values.get("k-a")!.adjustedValue).toBe(8);
+    expect(result.values.get("k-a")!.recommendedMaxBid).toBe(1);
+    expect(result.metadata.budgetPace.unallocatableSurplus).toBe(8);
+    expect(Number.isFinite(result.metadata.budgetPace.unallocatableSurplus)).toBe(
+      true,
+    );
+  });
+
   it("rejects a missing roster and malformed or conflicting purchases", () => {
     expect(() => runValuationEngine(input({}, { myRosterId: 99 }))).toThrow(
       /roster/i,

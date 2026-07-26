@@ -1,7 +1,7 @@
 import type { DraftPurchase } from "../draft/types";
 import type { FlexSlot, Position } from "../league/types";
 import {
-  calculateBaseValues,
+  calculateBaseValuesWithMetadata,
   type BasePlayerValue,
   type CalculateBaseValuesInput,
 } from "./base-values";
@@ -67,6 +67,7 @@ export type ValuationMetadata = {
     hardLegalMaximum: number;
     strategyMaximum: number;
     configuredExtraReserve: number;
+    unallocatableSurplus: number;
   };
 };
 
@@ -578,7 +579,8 @@ export function runValuationEngineWithMetadata(
   const playerContext = canonicalPlayerContext(input);
   validatePurchases(input, playerContext.selectedPositions);
 
-  const baseValues = calculateBaseValues(input);
+  const baseValueResult = calculateBaseValuesWithMetadata(input);
+  const baseValues = baseValueResult.values;
   const positionState = buildPositionState(
     input,
     playerContext.selectedPositions,
@@ -634,9 +636,14 @@ export function runValuationEngineWithMetadata(
         adjusted.adjustedValue = roundedOverride;
       }
       adjusted.adjustments = sortAdjustments(adjusted.adjustments);
+      const configuredPlayerMaximum =
+        input.league.capKickerDefenseAtOne &&
+        (base.position === "K" || base.position === "DEF")
+          ? 1
+          : strategyBid;
       const recommendedMaxBid = Math.max(
         0,
-        Math.min(Math.round(adjusted.adjustedValue), strategyBid),
+        Math.min(Math.round(adjusted.adjustedValue), configuredPlayerMaximum),
       );
       result.set(playerId, {
         ...base,
@@ -706,6 +713,8 @@ export function runValuationEngineWithMetadata(
         hardLegalMaximum: legalBid,
         strategyMaximum: strategyBid,
         configuredExtraReserve,
+        unallocatableSurplus:
+          baseValueResult.metadata.unallocatableSurplus,
       },
     },
   };

@@ -36,6 +36,15 @@ export type CalculateBaseValuesInput = {
   auctionComplete?: boolean;
 };
 
+export type BaseValueMetadata = {
+  unallocatableSurplus: number;
+};
+
+export type BaseValueResult = {
+  values: Map<string, BasePlayerValue>;
+  metadata: BaseValueMetadata;
+};
+
 type CanonicalPlayer = {
   playerId: string;
   positions: Position[];
@@ -586,14 +595,14 @@ function allocateDisplayValues(
   return displayValues;
 }
 
-export function calculateBaseValues({
+export function calculateBaseValuesWithMetadata({
   league,
   strategy,
   players,
   teams,
   replacementLevels,
   preDraftDisplayValues,
-}: CalculateBaseValuesInput): Map<string, BasePlayerValue> {
+}: CalculateBaseValuesInput): BaseValueResult {
   if (!Number.isSafeInteger(league.minBid) || league.minBid <= 0) {
     throw new Error("League minimum bid must be a positive integer");
   }
@@ -658,15 +667,15 @@ export function calculateBaseValues({
   // at zero instead of inventing a live-draft budget.
   const allocatableExtraPool = openSlots === 0 ? 0 : extraPool;
   const weights = normalizedWeights(uncappedPlayers);
-
-  if (allocatableExtraPool > 0 && uncappedPlayers.length === 0) {
-    throw new Error(
-      "Extra dollars cannot be allocated because every player is capped",
-    );
-  }
+  const unallocatableSurplus =
+    allocatableExtraPool > 0 && uncappedPlayers.length === 0
+      ? allocatableExtraPool
+      : 0;
+  const distributableExtraPool =
+    allocatableExtraPool - unallocatableSurplus;
 
   let fallbackPlayerId: string | undefined;
-  if (allocatableExtraPool > 0 && weights.maximum === 0) {
+  if (distributableExtraPool > 0 && weights.maximum === 0) {
     fallbackPlayerId = [...uncappedPlayers].sort(
       (left, right) =>
         right.points - left.points || compareIds(left.playerId, right.playerId),
@@ -684,9 +693,9 @@ export function calculateBaseValues({
     if (!isCapped(player, league)) {
       const normalizedWeight = weights.byId.get(player.playerId) ?? 0;
       if (weights.sum > 0 && normalizedWeight > 0) {
-        extra = allocatableExtraPool * (normalizedWeight / weights.sum);
+        extra = distributableExtraPool * (normalizedWeight / weights.sum);
       } else if (player.playerId === fallbackPlayerId) {
-        extra = allocatableExtraPool;
+        extra = distributableExtraPool;
       }
     }
     baseValues.set(player.playerId, league.minBid + extra);
@@ -695,36 +704,45 @@ export function calculateBaseValues({
   const roundedDraftableValues = allocateDisplayValues(
     draftablePlayers,
     league.minBid,
-    allocatableExtraPool,
+    distributableExtraPool,
     weights.byId,
     fallbackPlayerId,
   );
 
-  return new Map(
-    outputValuedPlayers.map((player) => {
-      const publicPlayer = publicValuedPlayer(player);
-      const baseValue = baseValues.get(player.playerId)!;
-      const displayValue = roundedDraftableValues.get(player.playerId) ?? 0;
-      const preDraftValue = preDraftDisplayValues?.get(player.playerId);
-      const rawInflation =
-        Number.isFinite(preDraftValue) &&
-        preDraftValue !== undefined &&
-        preDraftValue > 0
-          ? displayValue / preDraftValue
+  return {
+    values: new Map(
+      outputValuedPlayers.map((player) => {
+        const publicPlayer = publicValuedPlayer(player);
+        const baseValue = baseValues.get(player.playerId)!;
+        const displayValue = roundedDraftableValues.get(player.playerId) ?? 0;
+        const preDraftValue = preDraftDisplayValues?.get(player.playerId);
+        const rawInflation =
+          Number.isFinite(preDraftValue) &&
+          preDraftValue !== undefined &&
+          preDraftValue > 0
+            ? displayValue / preDraftValue
+            : 1;
+        const inflationMultiplier = Number.isFinite(rawInflation)
+          ? rawInflation
           : 1;
-      const inflationMultiplier = Number.isFinite(rawInflation)
-        ? rawInflation
-        : 1;
 
-      return [
-        player.playerId,
-        {
-          ...publicPlayer,
-          baseValue,
-          displayValue,
-          inflationMultiplier,
-        },
-      ];
-    }),
-  );
+        return [
+          player.playerId,
+          {
+            ...publicPlayer,
+            baseValue,
+            displayValue,
+            inflationMultiplier,
+          },
+        ];
+      }),
+    ),
+    metadata: { unallocatableSurplus },
+  };
+}
+
+export function calculateBaseValues(
+  input: CalculateBaseValuesInput,
+): Map<string, BasePlayerValue> {
+  return calculateBaseValuesWithMetadata(input).values;
 }
