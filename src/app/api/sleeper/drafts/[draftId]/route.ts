@@ -93,11 +93,14 @@ export function createDraftHandler(
       );
     }
 
-    const rateLimit = limiter.check(requestClientKey(request));
+    const rateLimit = await limiter.check(requestClientKey(request));
     if (!rateLimit.allowed) {
       return NextResponse.json(
         {
-          error: { code: "RATE_LIMITED", message: "Too many Sleeper requests" },
+          error: {
+            code: "RATE_LIMITED",
+            message: "Sleeper rate limit reached",
+          },
         },
         {
           status: 429,
@@ -127,6 +130,13 @@ export function createDraftHandler(
         normalizeDraft({ draft, picks, league, users, rosters }),
       );
     } catch (error) {
+      if (
+        error instanceof SleeperError &&
+        error.code === "RATE_LIMITED" &&
+        error.retryAfterSeconds
+      ) {
+        await limiter.blockFor(error.retryAfterSeconds);
+      }
       return errorResponse(error);
     }
   };

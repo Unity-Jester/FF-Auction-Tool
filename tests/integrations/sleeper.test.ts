@@ -3,7 +3,12 @@ import { describe, expect, it, vi } from "vitest";
 import { SleeperClient, SleeperError } from "@/integrations/sleeper/client";
 import { normalizeDraft } from "@/integrations/sleeper/normalize-draft";
 import { parseDraftReference } from "@/integrations/sleeper/parse-draft-reference";
-import { createRateLimiter } from "@/integrations/sleeper/rate-limiter";
+import {
+  createInMemoryRateLimitStore,
+  createRateLimiter,
+  createUpstashRateLimitStore,
+  requestClientKey,
+} from "@/integrations/sleeper/rate-limiter";
 import { createDraftHandler } from "@/app/api/sleeper/drafts/[draftId]/route";
 import { createPlayersHandler } from "@/app/api/sleeper/players/route";
 import { createUserDraftsHandler } from "@/app/api/sleeper/users/[username]/drafts/route";
@@ -444,6 +449,68 @@ describe("normalizeDraft", () => {
       TE: 0.75,
     });
   });
+
+  it.each([
+    ["standard", 0, "SCORING_INFERRED"],
+    ["non_ppr", 0, "SCORING_INFERRED"],
+    ["half_ppr", 0.5, "SCORING_INFERRED"],
+    ["ppr", 1, "SCORING_INFERRED"],
+    ["dynasty_2qb", 0, "SCORING_DEFAULTED"],
+  ] as const)(
+    "maps mock scoring type %s to %s receptions with a source note",
+    (scoringType, reception, warningCode) => {
+      const result = normalizeDraft({
+        draft: {
+          ...auctionDraft,
+          league_id: null,
+          metadata: { scoring_type: scoringType },
+        },
+        picks: [],
+      });
+
+      expect(result.snapshot.league.scoring.reception).toBe(reception);
+      expect(result.warnings).toContainEqual(
+        expect.objectContaining({
+          code: warningCode,
+          source: "draft.metadata.scoring_type",
+        }),
+      );
+    },
+  );
+
+  it("never exposes raw or oversized fields in quarantined picks", () => {
+    const result = normalizeDraft({
+      draft: auctionDraft,
+      picks: [
+        {
+          draft_id: auctionDraft.draft_id,
+          player_id: "4046",
+          roster_id: 3,
+          draft_slot: 3,
+          pick_no: 1,
+          metadata: {
+            amount: "not-money",
+            secret: "do-not-return",
+            oversized: "x".repeat(20_000),
+          },
+        },
+      ],
+    });
+    const serialized = JSON.stringify(result.quarantinedPicks);
+
+    expect(result.quarantinedPicks).toEqual([
+      {
+        reason: "INVALID_AMOUNT",
+        index: 0,
+        draftId: auctionDraft.draft_id,
+        playerId: "4046",
+        rosterId: 3,
+        pickNo: 1,
+      },
+    ]);
+    expect(serialized).not.toContain("do-not-return");
+    expect(serialized.length).toBeLessThan(500);
+  });
 });
 
 describe("SleeperClient", () => {
@@ -536,28 +603,152 @@ describe("SleeperClient", () => {
 });
 
 describe("Sleeper rate limiter", () => {
-  it("uses a bounded deterministic window and prunes expired entries", () => {
+  it("uses a bounded deterministic window and prunes expired entries", async () => {
     let now = 0;
-    const limiter = createRateLimiter({
-      limit: 2,
-      windowMs: 1_000,
+    const store = createInMemoryRateLimitStore({
       maxEntries: 2,
       now: () => now,
     });
+    const limiter = createRateLimiter({
+      limit: 2,
+      windowMs: 1_000,
+      store,
+      now: () => now,
+    });
 
-    expect(limiter.check("a").allowed).toBe(true);
-    expect(limiter.check("a").allowed).toBe(true);
-    expect(limiter.check("a")).toEqual({
+    expect((await limiter.check("a")).allowed).toBe(true);
+    expect((await limiter.check("a")).allowed).toBe(true);
+    expect(await limiter.check("a")).toEqual({
       allowed: false,
       retryAfterSeconds: 1,
     });
-    expect(limiter.check("b").allowed).toBe(true);
+    expect((await limiter.check("b")).allowed).toBe(true);
     expect(limiter.size).toBe(2);
-    expect(limiter.check("c").allowed).toBe(true);
+    expect((await limiter.check("c")).allowed).toBe(true);
     expect(limiter.size).toBe(2);
     now = 1_001;
-    expect(limiter.check("d").allowed).toBe(true);
+    expect((await limiter.check("d")).allowed).toBe(true);
     expect(limiter.size).toBe(1);
+  });
+
+  it("shares counters and upstream circuit state across limiter instances", async () => {
+    let now = 10_000;
+    const store = createInMemoryRateLimitStore({ now: () => now });
+    const first = createRateLimiter({
+      limit: 1,
+      windowMs: 60_000,
+      store,
+      now: () => now,
+    });
+    const second = createRateLimiter({
+      limit: 1,
+      windowMs: 60_000,
+      store,
+      now: () => now,
+    });
+
+    expect((await first.check("client")).allowed).toBe(true);
+    expect(await second.check("client")).toMatchObject({ allowed: false });
+    await first.blockFor(17);
+    expect(await second.check("different-client")).toEqual({
+      allowed: false,
+      retryAfterSeconds: 17,
+    });
+    now += 17_001;
+    expect((await second.check("different-client")).allowed).toBe(true);
+  });
+
+  it("uses an atomic Upstash-compatible REST increment with expiry", async () => {
+    let count = 0;
+    let blockedUntil: string | null = null;
+    const fetchFn = vi.fn(async (_url: string, init?: RequestInit) => {
+      const command = JSON.parse(String(init?.body));
+      if (command[0] === "GET") {
+        return new Response(JSON.stringify({ result: blockedUntil }));
+      }
+      if (command[0] === "EVAL" && String(command[1]).includes("INCR")) {
+        count += 1;
+        return new Response(JSON.stringify({ result: [count, 60_000] }));
+      }
+      if (command[0] === "EVAL") {
+        blockedUntil = command[4];
+        return new Response(JSON.stringify({ result: Number(blockedUntil) }));
+      }
+      return new Response(JSON.stringify({ result: 0 }));
+    });
+    const store = createUpstashRateLimitStore({
+      url: "https://example.upstash.io",
+      token: "test-token",
+      fetchFn,
+    });
+    const limiter = createRateLimiter({
+      limit: 1,
+      windowMs: 60_000,
+      store,
+      now: () => 0,
+    });
+
+    expect((await limiter.check("client")).allowed).toBe(true);
+    expect(await limiter.check("client")).toEqual({
+      allowed: false,
+      retryAfterSeconds: 60,
+    });
+    await limiter.blockFor(15);
+    const otherInstance = createRateLimiter({
+      store,
+      now: () => 0,
+    });
+    expect(await otherInstance.check("different-client")).toEqual({
+      allowed: false,
+      retryAfterSeconds: 15,
+    });
+    expect(fetchFn).toHaveBeenCalledWith(
+      "https://example.upstash.io",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          Authorization: "Bearer test-token",
+        }),
+      }),
+    );
+  });
+
+  it("trusts platform IP headers and ignores spoofable forwarding by default", () => {
+    expect(
+      requestClientKey(
+        new Request("http://localhost", {
+          headers: {
+            "cf-connecting-ip": "203.0.113.4",
+            "x-forwarded-for": "198.51.100.99",
+          },
+        }),
+        { trustProxy: false },
+      ),
+    ).toBe("203.0.113.4");
+    expect(
+      requestClientKey(
+        new Request("http://localhost", {
+          headers: { "x-vercel-forwarded-for": "2001:db8::1, 10.0.0.1" },
+        }),
+        { trustProxy: false },
+      ),
+    ).toBe("2001:db8::1");
+    expect(
+      requestClientKey(
+        new Request("http://localhost", {
+          headers: { "x-forwarded-for": "198.51.100.99" },
+        }),
+        { trustProxy: false },
+      ),
+    ).toBe("global");
+    expect(
+      requestClientKey(
+        new Request("http://localhost", {
+          headers: { "x-forwarded-for": "198.51.100.99<script>" },
+        }),
+        { trustProxy: true },
+      ),
+    ).toBe("global");
   });
 });
 
@@ -613,7 +804,13 @@ describe("Sleeper routes", () => {
               type: "snake",
               draft_order: null,
             },
-            { type: "auction", status: "drafting", settings: {} },
+            {
+              type: "auction",
+              status: "drafting",
+              settings: {},
+              secret: "do-not-return",
+              oversized: "x".repeat(20_000),
+            },
           ]),
         );
       }
@@ -632,8 +829,11 @@ describe("Sleeper routes", () => {
       expect.objectContaining({ draftId: auctionDraft.draft_id }),
     ]);
     expect(body.quarantinedDrafts).toEqual([
-      expect.objectContaining({ reason: "INVALID_DRAFT" }),
+      { reason: "INVALID_DRAFT", index: 2 },
     ]);
+    expect(JSON.stringify(body.quarantinedDrafts)).not.toContain(
+      "do-not-return",
+    );
   });
 
   it("returns 404 when Sleeper answers an unknown username with null", async () => {
@@ -843,7 +1043,7 @@ describe("Sleeper routes", () => {
     expect(denied.status).toBe(429);
     expect(denied.headers.get("Retry-After")).toBe("60");
     expect(await denied.json()).toEqual({
-      error: { code: "RATE_LIMITED", message: "Too many Sleeper requests" },
+      error: { code: "RATE_LIMITED", message: "Sleeper rate limit reached" },
     });
     expect(client.getUser).toHaveBeenCalledTimes(1);
     expect(client.getNflState).toHaveBeenCalledTimes(1);
@@ -911,6 +1111,11 @@ describe("Sleeper routes", () => {
   );
 
   it("passes a bounded upstream rate-limit signal without retrying", async () => {
+    let now = 0;
+    const limiter = createRateLimiter({
+      store: createInMemoryRateLimitStore({ now: () => now }),
+      now: () => now,
+    });
     const client = {
       getDraft: vi.fn(async () => {
         throw new SleeperError("RATE_LIMITED", 17);
@@ -920,9 +1125,10 @@ describe("Sleeper routes", () => {
       getLeagueUsers: vi.fn(),
       getLeagueRosters: vi.fn(),
     };
-    const response = await createDraftHandler(client)(
+    const GET = createDraftHandler(client, limiter);
+    const response = await GET(
       new Request("http://localhost", {
-        headers: { "x-real-ip": "198.51.100.17" },
+        headers: { "cf-connecting-ip": "198.51.100.17" },
       }),
       { params: Promise.resolve({ draftId: auctionDraft.draft_id }) },
     );
@@ -930,56 +1136,58 @@ describe("Sleeper routes", () => {
     expect(response.status).toBe(429);
     expect(response.headers.get("Retry-After")).toBe("17");
     expect(client.getDraft).toHaveBeenCalledTimes(1);
+
+    now = 1_000;
+    const shortCircuited = await GET(
+      new Request("http://localhost", {
+        headers: { "cf-connecting-ip": "198.51.100.18" },
+      }),
+      { params: Promise.resolve({ draftId: "223456789012345678" }) },
+    );
+    expect(shortCircuited.status).toBe(429);
+    expect(shortCircuited.headers.get("Retry-After")).toBe("16");
+    expect(await shortCircuited.json()).toEqual({
+      error: {
+        code: "RATE_LIMITED",
+        message: "Sleeper rate limit reached",
+      },
+    });
+    expect(client.getDraft).toHaveBeenCalledTimes(1);
   });
 });
 
 describe("Sleeper player route", () => {
-  it("returns compact active players with one-day upstream caching", async () => {
-    const client = {
-      getPlayers: vi.fn(async () => ({
-        "1": {
-          player_id: "1",
-          full_name: "Active Player",
-          first_name: "Active",
-          last_name: "Player",
-          position: "RB",
-          team: "CHI",
-          active: true,
-          search_full_name: "activeplayer",
-          enormous_unused_field: "x".repeat(20_000),
-        },
-        "2": {
-          player_id: "2",
-          full_name: "Retired Player",
-          position: "QB",
-          team: null,
-          active: false,
-        },
-      })),
-    };
-    const response = await createPlayersHandler(client)(
+  it("serves only the compact checked-in snapshot with cache and ETag support", async () => {
+    const GET = createPlayersHandler();
+    const response = await GET(
       new Request("http://localhost/api/sleeper/players", {
-        headers: { "x-real-ip": "198.51.100.22" },
+        headers: { "cf-connecting-ip": "198.51.100.22" },
       }),
     );
     const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(client.getPlayers).toHaveBeenCalledWith({
-      next: { revalidate: 86_400 },
-    });
-    expect(body).toEqual({
-      players: [
-        {
-          playerId: "1",
-          fullName: "Active Player",
-          firstName: "Active",
-          lastName: "Player",
-          position: "RB",
-          team: "CHI",
+    expect(body.players.length).toBeGreaterThan(500);
+    expect(
+      body.players.every((player: { position: string }) =>
+        ["QB", "RB", "WR", "TE", "K", "DEF"].includes(player.position),
+      ),
+    ).toBe(true);
+    expect(JSON.stringify(body).length).toBeLessThan(1_000_000);
+    expect(response.headers.get("Cache-Control")).toBe(
+      "public, s-maxage=86400, stale-while-revalidate=86400",
+    );
+    const etag = response.headers.get("ETag");
+    expect(etag).toMatch(/^"[a-f0-9]{64}"$/);
+
+    const notModified = await GET(
+      new Request("http://localhost/api/sleeper/players", {
+        headers: {
+          "cf-connecting-ip": "198.51.100.23",
+          "if-none-match": etag!,
         },
-      ],
-    });
-    expect(JSON.stringify(body).length).toBeLessThan(1_000);
+      }),
+    );
+    expect(notModified.status).toBe(304);
   });
 });

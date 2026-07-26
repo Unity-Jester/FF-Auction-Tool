@@ -4,7 +4,6 @@ import {
   SleeperDraftSchema,
   SleeperLeagueSchema,
   SleeperNflStateSchema,
-  SleeperPlayerMapSchema,
   SleeperRawDraftsSchema,
   SleeperRawPicksSchema,
   SleeperRostersSchema,
@@ -158,9 +157,5 @@ export class SleeperClient {
       SleeperRostersSchema,
       options,
     );
-  }
-
-  getPlayers(options?: SleeperRequestOptions) {
-    return this.request("/players/nfl", SleeperPlayerMapSchema, options);
   }
 }

@@ -30,15 +30,26 @@ export type NormalizedDraft = {
   teams: SourceTeam[];
   users: Array<ReturnType<typeof SleeperUserSchema.parse>>;
   quarantinedPicks: QuarantinedPick[];
+  warnings: DraftWarning[];
 };
 
 export type QuarantinedPick = {
-  pick: unknown;
   reason:
     | "INVALID_PICK"
     | "INVALID_AMOUNT"
     | "UNRESOLVED_ROSTER"
     | "CONFLICTING_DUPLICATE";
+  index: number;
+  draftId?: string;
+  playerId?: string;
+  rosterId?: number;
+  pickNo?: number;
+};
+
+export type DraftWarning = {
+  code: "SCORING_INFERRED" | "SCORING_DEFAULTED";
+  source: "draft.metadata.scoring_type";
+  message: string;
 };
 
 type NormalizeInput = {
@@ -75,6 +86,46 @@ function keeper(topLevel: unknown, metadata: Record<string, unknown>): boolean {
     (value) =>
       value === true || value === 1 || value === "1" || value === "true",
   );
+}
+
+function safeIdentifier(value: unknown): string | undefined {
+  if (typeof value !== "string" && typeof value !== "number") return undefined;
+  if (typeof value === "number" && !Number.isFinite(value)) return undefined;
+  const identifier = String(value);
+  return /^[A-Za-z0-9_-]{1,64}$/.test(identifier) ? identifier : undefined;
+}
+
+function quarantine(
+  raw: unknown,
+  index: number,
+  reason: QuarantinedPick["reason"],
+): QuarantinedPick {
+  const record =
+    raw && typeof raw === "object" && !Array.isArray(raw)
+      ? (raw as Record<string, unknown>)
+      : {};
+  const rosterId =
+    typeof record.roster_id === "number" &&
+    Number.isInteger(record.roster_id) &&
+    record.roster_id > 0
+      ? record.roster_id
+      : undefined;
+  const pickNo =
+    typeof record.pick_no === "number" &&
+    Number.isInteger(record.pick_no) &&
+    record.pick_no > 0
+      ? record.pick_no
+      : undefined;
+  const draftId = safeIdentifier(record.draft_id);
+  const playerId = safeIdentifier(record.player_id);
+  return {
+    reason,
+    index,
+    ...(draftId ? { draftId } : {}),
+    ...(playerId ? { playerId } : {}),
+    ...(rosterId ? { rosterId } : {}),
+    ...(pickNo ? { pickNo } : {}),
+  };
 }
 
 function rosterCounts(
@@ -209,12 +260,43 @@ export function normalizeDraft(input: NormalizeInput): NormalizedDraft {
   const budget = numberSetting(draft.settings.budget, 200);
   const slotConfig = rosterCounts(draft.settings, league?.roster_positions);
   const scoring = league?.scoring_settings ?? {};
+  const scoringType =
+    typeof draft.metadata?.scoring_type === "string"
+      ? draft.metadata.scoring_type.toLowerCase()
+      : "";
+  const mockReceptionByType: Record<string, number> = {
+    standard: 0,
+    non_ppr: 0,
+    half_ppr: 0.5,
+    ppr: 1,
+  };
+  const inferredMockScoring = Object.prototype.hasOwnProperty.call(
+    mockReceptionByType,
+    scoringType,
+  );
+  const warnings: DraftWarning[] =
+    league === undefined
+      ? [
+          {
+            code: inferredMockScoring
+              ? "SCORING_INFERRED"
+              : "SCORING_DEFAULTED",
+            source: "draft.metadata.scoring_type",
+            message: inferredMockScoring
+              ? `Reception scoring inferred from ${scoringType}`
+              : "Unknown mock scoring type; defaulted receptions to zero",
+          },
+        ]
+      : [];
   const config = createLeagueConfig({
     teams: teamCount,
     budget,
     minBid: 1,
     ...slotConfig,
-    receptionPoints: numberSetting(scoring.rec, 0),
+    receptionPoints:
+      league === undefined
+        ? (mockReceptionByType[scoringType] ?? 0)
+        : numberSetting(scoring.rec, 0),
     scoring: {
       passYard: numberSetting(scoring.pass_yd, 0.04),
       passTd: numberSetting(scoring.pass_td, 4),
@@ -236,19 +318,20 @@ export function normalizeDraft(input: NormalizeInput): NormalizedDraft {
     string,
     Array<{
       raw: unknown;
+      index: number;
       purchase: DraftPurchase;
     }>
   >();
   const quarantinedPicks: QuarantinedPick[] = [];
-  for (const raw of input.picks) {
+  for (const [index, raw] of input.picks.entries()) {
     const parsed = SleeperPickSchema.safeParse(raw);
     if (!parsed.success) {
-      quarantinedPicks.push({ pick: raw, reason: "INVALID_PICK" });
+      quarantinedPicks.push(quarantine(raw, index, "INVALID_PICK"));
       continue;
     }
     const amount = strictPositiveAmount(parsed.data.metadata.amount);
     if (amount === null) {
-      quarantinedPicks.push({ pick: raw, reason: "INVALID_AMOUNT" });
+      quarantinedPicks.push(quarantine(raw, index, "INVALID_AMOUNT"));
       continue;
     }
     const mappedRosterId = Number(
@@ -262,7 +345,7 @@ export function normalizeDraft(input: NormalizeInput): NormalizedDraft {
         ? mappedRosterId
         : fallbackRosterId);
     if (rosterId === null) {
-      quarantinedPicks.push({ pick: raw, reason: "UNRESOLVED_ROSTER" });
+      quarantinedPicks.push(quarantine(raw, index, "UNRESOLVED_ROSTER"));
       continue;
     }
     const purchase: DraftPurchase = {
@@ -284,7 +367,7 @@ export function normalizeDraft(input: NormalizeInput): NormalizedDraft {
       purchase.rosterId,
     ]);
     const group = parsedGroups.get(key) ?? [];
-    group.push({ raw, purchase });
+    group.push({ raw, index, purchase });
     parsedGroups.set(key, group);
   }
 
@@ -295,10 +378,9 @@ export function normalizeDraft(input: NormalizeInput): NormalizedDraft {
     );
     if (signatures.size > 1) {
       quarantinedPicks.push(
-        ...group.map(({ raw }) => ({
-          pick: raw,
-          reason: "CONFLICTING_DUPLICATE" as const,
-        })),
+        ...group.map(({ raw, index }) =>
+          quarantine(raw, index, "CONFLICTING_DUPLICATE"),
+        ),
       );
       return;
     }
@@ -339,5 +421,6 @@ export function normalizeDraft(input: NormalizeInput): NormalizedDraft {
     teams: teamMetadata,
     users,
     quarantinedPicks,
+    warnings,
   };
 }

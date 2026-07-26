@@ -75,11 +75,14 @@ export function createUserDraftsHandler(
       );
     }
 
-    const rateLimit = limiter.check(requestClientKey(request));
+    const rateLimit = await limiter.check(requestClientKey(request));
     if (!rateLimit.allowed) {
       return NextResponse.json(
         {
-          error: { code: "RATE_LIMITED", message: "Too many Sleeper requests" },
+          error: {
+            code: "RATE_LIMITED",
+            message: "Sleeper rate limit reached",
+          },
         },
         {
           status: 429,
@@ -98,12 +101,34 @@ export function createUserDraftsHandler(
         next: { revalidate: 2 },
       });
       const validDrafts = [];
-      const quarantinedDrafts = [];
-      for (const rawDraft of drafts) {
+      const quarantinedDrafts: Array<{
+        reason: "INVALID_DRAFT";
+        index: number;
+        draftId?: string;
+      }> = [];
+      for (const [index, rawDraft] of drafts.entries()) {
         const parsed = SleeperDraftSchema.safeParse(rawDraft);
         if (parsed.success) validDrafts.push(parsed.data);
-        else
-          quarantinedDrafts.push({ draft: rawDraft, reason: "INVALID_DRAFT" });
+        else {
+          const rawDraftId =
+            rawDraft &&
+            typeof rawDraft === "object" &&
+            !Array.isArray(rawDraft) &&
+            ("draft_id" in rawDraft
+              ? (rawDraft as Record<string, unknown>).draft_id
+              : undefined);
+          const draftId =
+            (typeof rawDraftId === "string" ||
+              typeof rawDraftId === "number") &&
+            /^[A-Za-z0-9_-]{1,64}$/.test(String(rawDraftId))
+              ? String(rawDraftId)
+              : undefined;
+          quarantinedDrafts.push({
+            reason: "INVALID_DRAFT",
+            index,
+            ...(draftId ? { draftId } : {}),
+          });
+        }
       }
       return NextResponse.json({
         user: {
@@ -123,6 +148,13 @@ export function createUserDraftsHandler(
         quarantinedDrafts,
       });
     } catch (error) {
+      if (
+        error instanceof SleeperError &&
+        error.code === "RATE_LIMITED" &&
+        error.retryAfterSeconds
+      ) {
+        await limiter.blockFor(error.retryAfterSeconds);
+      }
       return errorResponse(error);
     }
   };
