@@ -86,8 +86,9 @@ export function AccountMenu({
     if (!client) return;
     const marker = new URL(window.location.href);
     const fragmentParams = recognizedAuthErrorFragment(marker);
+    const hasAuthErrorMarker = marker.searchParams.get("auth") === "error";
     if (
-      marker.searchParams.get("auth") !== "error" &&
+      !hasAuthErrorMarker &&
       !fragmentParams
     ) {
       return;
@@ -97,7 +98,7 @@ export function AccountMenu({
       setError(
         "That sign-in link could not be used. Request a new one or keep using guest mode.",
       );
-      marker.searchParams.delete("auth");
+      if (hasAuthErrorMarker) marker.searchParams.delete("auth");
       if (fragmentParams) {
         for (const name of authErrorFragmentParams) {
           fragmentParams.delete(name);

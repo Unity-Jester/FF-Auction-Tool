@@ -198,7 +198,7 @@ describe("AccountMenu", () => {
     window.history.replaceState(
       {},
       "",
-      "/?draft=123#error=access_denied&error_code=otp_expired&section=saved",
+      "/?draft=123&auth=profile#error=access_denied&error_code=otp_expired&section=saved",
     );
     render(
       <AccountMenu
@@ -212,7 +212,7 @@ describe("AccountMenu", () => {
       "That sign-in link could not be used.",
     );
     expect(`${window.location.pathname}${window.location.search}${window.location.hash}`)
-      .toBe("/?draft=123#section=saved");
+      .toBe("/?draft=123&auth=profile#section=saved");
   });
 
   it("leaves an ordinary application hash untouched", async () => {
