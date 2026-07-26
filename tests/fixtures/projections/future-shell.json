@@ -1,0 +1,16 @@
+[
+  {
+    "player_id": "10215",
+    "season": "2027",
+    "season_type": "regular",
+    "updated_at": 1810000000000,
+    "stats": { "adp_ppr": 999, "gp": 18 },
+    "player": {
+      "first_name": "Future",
+      "last_name": "Quarterback",
+      "position": "QB",
+      "fantasy_positions": ["QB"],
+      "team": null
+    }
+  }
+]

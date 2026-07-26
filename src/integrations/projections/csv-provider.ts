@@ -28,8 +28,8 @@ function safeStat(value: unknown): number | undefined {
 }
 
 export function parseProjectionCsv(csv: string, players: readonly ProjectionPlayer[]): CsvProjectionResult {
-  const result: CsvProjectionResult = { matched: [], unmatched: [], ambiguous: [], unsupported: [] };
-  if (typeof csv !== "string" || Buffer.byteLength(csv, "utf8") > maximumCsvBytes) {
+  const result: CsvProjectionResult = { matched: [], unmatched: [], ambiguous: [], duplicates: [], unsupported: [] };
+  if (typeof csv !== "string" || new TextEncoder().encode(csv).byteLength > maximumCsvBytes) {
     result.unsupported.push({ sourceName: "", reason: "CSV exceeds the 1 MB limit" });
     return result;
   }
@@ -40,6 +40,7 @@ export function parseProjectionCsv(csv: string, players: readonly ProjectionPlay
   }
   const headers = Object.keys(parsed.meta.fields ? Object.fromEntries(parsed.meta.fields.map((field) => [field, true])) : {});
   const invalidHeaders = headers.filter((header) => !allowedColumns.has(header) || header === "__proto__" || header === "constructor" || header === "prototype");
+  const pending = new Map<string, { projection: PlayerProjection; info: CsvProjectionRow }[]>();
   for (const row of parsed.data) {
     const info = rowInfo(row);
     if (invalidHeaders.length) { result.unsupported.push({ ...info, reason: `Unsupported columns: ${invalidHeaders.join(", ")}` }); continue; }
@@ -56,7 +57,14 @@ export function parseProjectionCsv(csv: string, players: readonly ProjectionPlay
     }
     if (invalidStat || Object.keys(stats).length === 0) { result.unsupported.push({ ...info, reason: invalidStat ? "Statistics must be finite plain numbers" : "No supported statistics supplied" }); continue; }
     const player = match.player;
-    result.matched.push({ playerId: player.playerId, name: player.name, team: player.team, positions: [...player.positions], stats, source: "CSV override", updatedAt: new Date().toISOString() } satisfies PlayerProjection);
+    const projection = { playerId: player.playerId, name: player.name, team: player.team, positions: [...player.positions], stats, source: "CSV override", updatedAt: new Date().toISOString() } satisfies PlayerProjection;
+    const matches = pending.get(player.playerId) ?? [];
+    matches.push({ projection, info: { ...info, playerId: player.playerId, stats } });
+    pending.set(player.playerId, matches);
+  }
+  for (const matches of pending.values()) {
+    if (matches.length === 1) result.matched.push(matches[0].projection);
+    else result.duplicates.push(...matches.map(({ info }) => ({ ...info, reason: "Multiple CSV rows resolve to this player" })));
   }
   return result;
 }

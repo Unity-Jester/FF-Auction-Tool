@@ -32,6 +32,13 @@ export type PlayerMatch =
   | { kind: "unmatched" }
   | { kind: "ambiguous"; candidates: string[] };
 
+function normalizeTeam(value: string | null | undefined): string | null | undefined {
+  const normalized = value?.trim().toUpperCase();
+  if (!normalized) return value === null ? null : undefined;
+  if (normalized === "FA" || normalized === "NONE" || normalized === "FREE AGENT") return null;
+  return normalized === "JAC" ? "JAX" : normalized;
+}
+
 export function matchProjectionPlayer(
   input: { playerId?: string; name?: string; team?: string; position?: string },
   players: readonly ProjectionPlayer[],
@@ -44,14 +51,14 @@ export function matchProjectionPlayer(
   const position = normalizePosition(input.position);
   if (!position) return { kind: "unmatched" };
   const name = normalizeProjectionName(input.name);
-  const team = input.team?.trim().toUpperCase();
+  const team = normalizeTeam(input.team);
   const candidates = players.filter(
     (player) =>
       normalizeProjectionName(player.name) === name &&
-      (!team || player.team?.toUpperCase() === team) &&
+      (team === undefined || normalizeTeam(player.team) === team) &&
       player.positions.includes(position),
   );
-  if (team && candidates.length === 1) return { kind: "matched", player: candidates[0] };
+  if (team !== undefined && candidates.length === 1) return { kind: "matched", player: candidates[0] };
   if (candidates.length > 1) return { kind: "ambiguous", candidates: candidates.map((player) => player.playerId).sort() };
   const nameAndPosition = players.filter(
     (player) => normalizeProjectionName(player.name) === name && player.positions.includes(position),

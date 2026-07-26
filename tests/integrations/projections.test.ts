@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { parseProjectionCsv } from "@/integrations/projections/csv-provider";
 import { createProjectionsHandler } from "@/app/api/projections/route";
@@ -6,8 +6,10 @@ import { matchProjectionPlayer } from "@/integrations/projections/match-player";
 import {
   createSleeperProjectionProvider,
   normalizeSleeperProjections,
+  validateProjectionSnapshot,
 } from "@/integrations/projections/sleeper-provider";
 import type { ProjectionSnapshot } from "@/integrations/projections/types";
+import futureShell from "../fixtures/projections/future-shell.json";
 
 const lastKnownSnapshot: ProjectionSnapshot = {
   source: "Sleeper season projections (checked-in fallback)",
@@ -33,6 +35,9 @@ describe("Sleeper projection provider", () => {
       fallback: lastKnownSnapshot,
       fetcher: async () => Array.from({ length: 100 }, (_, index) => ({
         player_id: String(index),
+        season: "2026",
+        season_type: "regular",
+        updated_at: 1785000000000 + index,
         full_name: `Player ${index}`,
         team: "BUF",
         position: "QB",
@@ -42,11 +47,73 @@ describe("Sleeper projection provider", () => {
     await expect(provider.load()).resolves.toMatchObject({ stale: false });
   });
 
+  it("rejects realistic future-season shells with no supported statistics", async () => {
+    const payload = Array.from({ length: 100 }, (_, index) => ({
+      ...futureShell[0],
+      player_id: String(index),
+    }));
+    expect(normalizeSleeperProjections(payload, 2027).projections).toEqual([]);
+    const provider = createSleeperProjectionProvider({ season: 2027, fallback: lastKnownSnapshot, fetcher: async () => payload });
+    await expect(provider.load()).resolves.toMatchObject({ stale: true, updatedAt: lastKnownSnapshot.updatedAt });
+  });
+
+  it("rejects snapshots whose players have no supported scoring statistic", () => {
+    expect(() => validateProjectionSnapshot({
+      source: "invalid",
+      updatedAt: "2026-07-25T00:00:00.000Z",
+      projections: [{ ...lastKnownSnapshot.projections[0], stats: { unsupported: 1 } as never }],
+    }, 1)).toThrow("Invalid projection record");
+  });
+
+  it("uses accepted Sleeper metadata for update time and rejects wrong season or season type", () => {
+    const normalized = normalizeSleeperProjections([
+      { player_id: "1", season: "2026", season_type: "regular", updated_at: 1785000000000, stats: { pass_yd: 4000 }, player: { full_name: "Valid One", position: "QB", team: "BUF" } },
+      { player_id: "2", season: "2026", season_type: "regular", last_modified: 1785000010000, stats: { rush_yd: 900 }, player: { full_name: "Valid Two", position: "RB", team: "JAX" } },
+      { player_id: "3", season: "2025", season_type: "regular", updated_at: 1999999999999, stats: { rec: 80 }, player: { full_name: "Wrong Season", position: "WR", team: "BUF" } },
+      { player_id: "4", season: "2026", season_type: "post", updated_at: 1999999999999, stats: { rec: 80 }, player: { full_name: "Wrong Type", position: "WR", team: "BUF" } },
+    ], 2026);
+    expect(normalized.projections.map((projection) => projection.playerId)).toEqual(["1", "2"]);
+    expect(normalized.updatedAt).toBe("2026-07-25T17:20:10.000Z");
+    expect(normalized.projections.every((projection) => projection.updatedAt === normalized.updatedAt)).toBe(true);
+  });
+
+  it("falls back on oversized and timed-out projection responses", async () => {
+    const oversized = createSleeperProjectionProvider({
+      season: 2026,
+      fallback: lastKnownSnapshot,
+      request: async () => new Response("[]", { headers: { "Content-Length": String(13 * 1024 * 1024) } }),
+    });
+    await expect(oversized.load()).resolves.toMatchObject({ stale: true });
+    const streamedOversized = createSleeperProjectionProvider({
+      season: 2026,
+      fallback: lastKnownSnapshot,
+      request: async () => new Response(new Uint8Array(13 * 1024 * 1024)),
+    });
+    await expect(streamedOversized.load()).resolves.toMatchObject({ stale: true });
+
+    vi.useFakeTimers();
+    const timedOut = createSleeperProjectionProvider({
+      season: 2026,
+      fallback: lastKnownSnapshot,
+      timeoutMs: 10,
+      request: async (_url, init) => new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+      }),
+    });
+    const loading = timedOut.load();
+    await vi.advanceTimersByTimeAsync(11);
+    await expect(loading).resolves.toMatchObject({ stale: true });
+    vi.useRealTimers();
+  });
+
   it("normalizes the current Sleeper projection response shape", () => {
     const normalized = normalizeSleeperProjections(
       {
         "4046": {
           player_id: "4046",
+          season: "2026",
+          season_type: "regular",
+          updated_at: 1785000000000,
           full_name: "Josh Allen",
           team: "BUF",
           position: "QB",
@@ -63,17 +130,17 @@ describe("Sleeper projection provider", () => {
           },
         },
       },
-      "2026-07-25T12:00:00.000Z",
+      2026,
     );
 
-    expect(normalized[0]).toMatchObject({
+    expect(normalized.projections[0]).toMatchObject({
       playerId: "4046",
       stats: { passYards: 4100, passTds: 31 },
     });
     expect(normalizeSleeperProjections([
-      { player_id: "4046", player: { full_name: "Josh Allen", team: "BUF", position: "QB" }, stats: {} },
-      { player_id: "4046", player: { full_name: "Duplicate", team: "BUF", position: "QB" }, stats: {} },
-    ], "2026-07-25T12:00:00.000Z")).toHaveLength(1);
+      { player_id: "4046", season: "2026", season_type: "regular", updated_at: 1785000000000, player: { full_name: "Josh Allen", team: "BUF", position: "QB" }, stats: { pass_yd: 4000 } },
+      { player_id: "4046", season: "2026", season_type: "regular", updated_at: 1785000000000, player: { full_name: "Duplicate", team: "BUF", position: "QB" }, stats: { pass_yd: 1 } },
+    ], 2026).projections).toHaveLength(1);
   });
 
   it("keeps the last valid snapshot when upstream fails, is malformed, or empty", async () => {
@@ -110,6 +177,8 @@ describe("CSV projections", () => {
     { playerId: "1", name: "A. Brown", team: "PHI", positions: ["WR"] },
     { playerId: "2", name: "A. Brown", team: "WAS", positions: ["WR"] },
     { playerId: "3", name: "Bears", team: "CHI", positions: ["DEF"] },
+    { playerId: "4", name: "Free Agent", team: null, positions: ["RB"] },
+    { playerId: "5", name: "Jacksonville Player", team: "JAX", positions: ["WR"] },
   ] as const;
 
   it("matches IDs first and otherwise requires name, compatible position, and team", () => {
@@ -131,6 +200,31 @@ describe("CSV projections", () => {
       playerId: "4046",
       stats: { passYards: 4100, passTds: 31 },
     });
+  });
+
+  it("matches explicit free-agent teams and Jacksonville aliases", () => {
+    expect(matchProjectionPlayer({ name: "Free Agent", team: "NONE", position: "RB" }, players)).toMatchObject({ kind: "matched", player: { playerId: "4" } });
+    expect(matchProjectionPlayer({ name: "Jacksonville Player", team: "JAC", position: "WR" }, players)).toMatchObject({ kind: "matched", player: { playerId: "5" } });
+  });
+
+  it("works in a browser without Buffer and quarantines duplicate player rows", () => {
+    const originalBuffer = globalThis.Buffer;
+    // @ts-expect-error Simulate a browser runtime without Node globals.
+    globalThis.Buffer = undefined;
+    try {
+      const result = parseProjectionCsv([
+        "player_id,name,team,position,pass_yd",
+        "4046,Josh Allen,BUF,QB,4000",
+        "4046,Josh Allen,BUF,QB,4100",
+      ].join("\n"), players);
+      expect(result.matched).toHaveLength(0);
+      expect(result.duplicates).toEqual([
+        expect.objectContaining({ playerId: "4046" }),
+        expect.objectContaining({ playerId: "4046" }),
+      ]);
+    } finally {
+      globalThis.Buffer = originalBuffer;
+    }
   });
 
   it("never auto-matches ambiguous names and rejects unsafe or unsupported values", () => {

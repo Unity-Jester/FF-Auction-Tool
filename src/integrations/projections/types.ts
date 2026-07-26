@@ -27,5 +27,6 @@ export type CsvProjectionResult = {
   matched: PlayerProjection[];
   unmatched: CsvProjectionRow[];
   ambiguous: (CsvProjectionRow & { candidates: string[] })[];
+  duplicates: CsvProjectionRow[];
   unsupported: CsvProjectionRow[];
 };
