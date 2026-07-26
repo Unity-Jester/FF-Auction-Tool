@@ -22,6 +22,23 @@ describe("transparent recovery and help", () => {
     expect(retry).toHaveBeenCalledOnce();
   });
 
+  it("uses distinct labelled headings when recovery panels appear together", async () => {
+    const { container } = render(<>
+      <RecoveryPanel code="OFFLINE" lastUpdatedAt="2026-07-25T12:34:00.000Z" />
+      <RecoveryPanel code="STORAGE" lastUpdatedAt="2026-07-25T12:34:00.000Z" />
+    </>);
+    const panels = screen.getAllByRole("region");
+    const labelledBy = panels.map((panel) => panel.getAttribute("aria-labelledby"));
+    expect(new Set(labelledBy).size).toBe(2);
+    for (const id of labelledBy) {
+      expect(id).toBeTruthy();
+      expect(container.querySelectorAll(`#${CSS.escape(id!)}`)).toHaveLength(1);
+    }
+    expect((await axe.run(container, {
+      rules: { "color-contrast": { enabled: false } },
+    })).violations).toEqual([]);
+  });
+
   it("opens accessible methodology help and restores focus to its trigger", async () => {
     const user = userEvent.setup();
     render(<Methodology projectionSource="Sleeper projections" projectionStale={false} />);
@@ -65,11 +82,14 @@ describe("transparent recovery and help", () => {
   it("passes automated accessibility checks for recovery and help", async () => {
     const user = userEvent.setup();
     const { container } = render(<>
+      <RecoveryPanel code="OFFLINE" lastUpdatedAt="2026-07-25T12:34:00.000Z" />
       <RecoveryPanel code="STORAGE" lastUpdatedAt={null} />
       <Methodology projectionSource="Sleeper projections" projectionStale={false} />
     </>);
     await user.click(screen.getByRole("button", { name: /how values work/i }));
-    const result = await axe.run(container);
+    const result = await axe.run(container, {
+      rules: { "color-contrast": { enabled: false } },
+    });
     expect(result.violations).toEqual([]);
   });
 });

@@ -143,6 +143,24 @@ describe("DraftRoomView", () => {
     expect(screen.getByText(/may not persist/i)).toBeInTheDocument();
   });
 
+  it("announces a memory-only correction once without making timestamps live", () => {
+    const { rerender } = render(<DraftRoomView model={model()} onRetry={vi.fn()} />);
+    expect(screen.queryByText(/correction is stored only in memory/i)).not.toBeInTheDocument();
+    rerender(<DraftRoomView model={model()} onRetry={vi.fn()} storageFailure />);
+    const announcement = screen.getByText(/correction is stored only in memory/i);
+    expect(announcement).toHaveAttribute("role", "status");
+    expect(announcement).toHaveAttribute("aria-live", "polite");
+    expect(announcement).not.toHaveTextContent(/updated|jul 25/i);
+
+    rerender(<DraftRoomView
+      model={model({ lastUpdatedAt: "2026-07-25T12:00:03.000Z" })}
+      onRetry={vi.fn()}
+      storageFailure
+    />);
+    expect(screen.getAllByText(/correction is stored only in memory/i)).toHaveLength(1);
+    expect(screen.getByText(/Last successful update: Jul 25/i)).not.toHaveAttribute("aria-live");
+  });
+
   it("returns focus to the correction invoker after cancel", async () => {
     const user = userEvent.setup();
     render(<DraftRoomView model={model()} onRetry={vi.fn()} onAddCorrection={vi.fn()} />);

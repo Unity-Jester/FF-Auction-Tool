@@ -187,6 +187,11 @@ export function DraftRoomView({
       )}
       {model.syncStatus !== "fresh" && <RecoveryPanel code={recoveryCode(syncError)} lastUpdatedAt={model.lastUpdatedAt} />}
       {storageFailure && <RecoveryPanel code="STORAGE" lastUpdatedAt={model.lastUpdatedAt} />}
+      {storageFailure && (
+        <p className={styles.srOnly} role="status" aria-live="polite" aria-atomic="true">
+          This correction is stored only in memory and may be lost after reload.
+        </p>
+      )}
       {model.configurationNotice && (
         <div className={styles.notice} role="status">
           {model.configurationNotice}

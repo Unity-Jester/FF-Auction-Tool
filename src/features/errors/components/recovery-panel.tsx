@@ -1,5 +1,6 @@
 "use client";
 
+import { useId } from "react";
 import styles from "@/features/draft-room/draft-room.module.css";
 
 export type RecoveryCode =
@@ -30,12 +31,13 @@ export function RecoveryPanel({ code = "UNKNOWN", lastUpdatedAt, onRetry }: {
   lastUpdatedAt: string | null;
   onRetry?: () => void;
 }) {
+  const headingId = useId();
   const message = guidance[code];
   const timestamp = lastUpdatedAt && new Intl.DateTimeFormat("en-US", {
     month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
   }).format(new Date(lastUpdatedAt));
-  return <section className={styles.recovery} aria-labelledby="recovery-title">
-    <h2 id="recovery-title">{message.title}</h2>
+  return <section className={styles.recovery} aria-labelledby={headingId}>
+    <h2 id={headingId}>{message.title}</h2>
     <p>{message.detail}</p>
     {timestamp && <p>Last successful update: {timestamp}.</p>}
     {onRetry && <button className={styles.criticalAction} type="button" onClick={onRetry}>Retry sync</button>}
