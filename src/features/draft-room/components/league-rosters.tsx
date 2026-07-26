@@ -23,7 +23,9 @@ export const LeagueRosters = memo(function LeagueRosters({
           <details key={team.rosterId} open={team.rosterId === model.selectedRosterId}>
             <summary>
               <span>{team.name}{team.rosterId === model.selectedRosterId ? " · You" : ""}</span>
-              <span>${team.remainingBudget} · max ${team.maximumLegalBid}</span>
+              <span>
+                ${team.remainingBudget} · max {team.maximumLegalBid === null ? "unavailable" : `$${team.maximumLegalBid}`}
+              </span>
             </summary>
             <div>
               {team.players.length ? team.players.map((player) => (

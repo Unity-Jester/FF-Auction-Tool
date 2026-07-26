@@ -225,6 +225,8 @@
   color: #ffc561;
   font-size: .8rem;
 }
+.emptyState p { margin: 0; }
+.emptyState a { display: inline-block; margin-top: .45rem; color: var(--color-text); }
 .correctionControl { margin-top: .4rem; }
 .correctionControl form { display: flex; margin-top: .5rem; gap: .5rem; align-items: end; }
 .correctionControl label { display: grid; gap: .2rem; color: var(--color-text-muted); font: .65rem var(--font-mono); text-transform: uppercase; }

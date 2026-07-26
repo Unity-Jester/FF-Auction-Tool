@@ -186,6 +186,47 @@ describe("DraftRoomView", () => {
     expect(save).not.toHaveBeenCalled();
   });
 
+  it("rejects a new correction when the destination roster has no open slot", async () => {
+    const user = userEvent.setup();
+    const save = vi.fn();
+    render(<DraftRoomView model={model({
+      teams: [
+        { ...model().teams[0], remainingBudget: 20, openSlots: 0, maximumLegalBid: 0 },
+        model().teams[1],
+      ],
+    })} onRetry={vi.fn()} onAddCorrection={save} />);
+
+    await user.click(screen.getByRole("button", { name: "Add local purchase correction" }));
+    expect(screen.getByRole("alert")).toHaveTextContent(/no open roster slots/i);
+    await user.type(screen.getByRole("spinbutton", { name: "Local sale price" }), "5");
+    await user.click(screen.getByRole("button", { name: "Save local correction" }));
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("rejects a transfer to a full roster but permits a price-only edit on its current full roster", async () => {
+    const user = userEvent.setup();
+    const save = vi.fn();
+    render(<DraftRoomView model={model({
+      teams: [
+        { ...model().teams[0], remainingBudget: 10, openSlots: 0, maximumLegalBid: 0 },
+        { ...model().teams[1], remainingBudget: 30, openSlots: 0, maximumLegalBid: 0 },
+      ],
+    })} onRetry={vi.fn()} onAddCorrection={save} />);
+
+    await user.click(screen.getByRole("button", { name: "Edit purchase for Amon-Ra St. Brown" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "Assign to" }), "2");
+    expect(screen.getByRole("alert")).toHaveTextContent(/no open roster slots/i);
+    await user.click(screen.getByRole("button", { name: "Save local correction" }));
+    expect(save).not.toHaveBeenCalled();
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Assign to" }), "1");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await user.clear(screen.getByRole("spinbutton", { name: "Local sale price" }));
+    await user.type(screen.getByRole("spinbutton", { name: "Local sale price" }), "55");
+    await user.click(screen.getByRole("button", { name: "Save local correction" }));
+    expect(save).toHaveBeenCalledWith("owned", 1, 55);
+  });
+
   it("edits an existing roster purchase in place with the owner and price prefilled", async () => {
     const user = userEvent.setup();
     const save = vi.fn();
@@ -391,6 +432,47 @@ describe("buildDraftRoomViewModel", () => {
     }));
   });
 
+  it("blocks valuation instead of mixing a 10-team corrected setup with a 12-team Sleeper draft", () => {
+    const tenTeamLeague = { ...completed.league, teams: 10 };
+    const result = buildDraftRoomViewModel({
+      snapshot: completed,
+      league: tenTeamLeague,
+      strategy: defaultStrategy(tenTeamLeague),
+      preferences: {},
+      projections,
+      projectionSource: "Regression fixture",
+      projectionStale: false,
+      playerSnapshot: players,
+      myRosterId: 1,
+      localCorrections: [],
+      syncStatus: "fresh",
+      lastUpdatedAt: completed.lastUpdatedAt,
+    });
+
+    expect(result.emptyMessage).toMatch(/saved setup has 10 teams.*Sleeper draft has 12/i);
+    expect(result.reviewSetupRequired).toBe(true);
+    expect(result.players).toEqual([]);
+    expect(result.teams).toHaveLength(12);
+    expect(result.teams[0]).toEqual(expect.objectContaining({
+      remainingBudget: completed.teams[0].remainingBudget,
+      openSlots: completed.teams[0].openSlots,
+      maximumLegalBid: null,
+    }));
+  });
+
+  it("links a blocked team-count mismatch back to setup review", () => {
+    render(<DraftRoomView model={model({
+      players: [],
+      emptyMessage: "Values unavailable: saved setup has 10 teams, but Sleeper draft has 12.",
+      reviewSetupRequired: true,
+    })} onRetry={vi.fn()} />);
+
+    expect(screen.getByRole("link", { name: "Review setup" })).toHaveAttribute(
+      "href",
+      "/draft/draft-1/setup",
+    );
+  });
+
   it("uses final Sleeper purchases and quarantines unresolved local corrections after completion", () => {
     const local = {
       ...completed.purchases[0],
@@ -500,5 +582,43 @@ describe("buildDraftRoomViewModel", () => {
     expect(result.dataWarnings).toEqual([
       "1 purchase could not be joined to player position data.",
     ]);
+  });
+
+  it.each([
+    ["authoritative", []],
+    ["local correction", [{
+      ...completed.purchases[0],
+      rosterId: 99,
+      source: "local" as const,
+    }]],
+  ])("blocks partial guidance when an unknown roster appears in an %s record", (_, localCorrections) => {
+    const active: DraftSnapshot = {
+      ...completed,
+      status: "drafting",
+      purchases: localCorrections.length
+        ? completed.purchases
+        : [{ ...completed.purchases[0], rosterId: 99 }, ...completed.purchases.slice(1)],
+    };
+    const result = buildDraftRoomViewModel({
+      snapshot: active,
+      league: active.league,
+      strategy: defaultStrategy(active.league),
+      preferences: {},
+      projections,
+      projectionSource: "Regression fixture",
+      projectionStale: false,
+      playerSnapshot: players,
+      myRosterId: 1,
+      localCorrections,
+      syncStatus: "fresh",
+      lastUpdatedAt: active.lastUpdatedAt,
+    });
+
+    expect(result.emptyMessage).toMatch(/unknown roster.*review setup/i);
+    expect(result.players).toEqual([]);
+    expect(result.teams.every((team) => team.maximumLegalBid === null)).toBe(true);
+    expect(result.dataWarnings).toContain(
+      "1 purchase was quarantined because it referenced an unknown roster.",
+    );
   });
 });

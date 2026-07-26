@@ -38,7 +38,7 @@ export type DraftRoomTeam = {
   name: string;
   remainingBudget: number;
   openSlots: number;
-  maximumLegalBid: number;
+  maximumLegalBid: number | null;
   players: Array<{
     id: string;
     name: string;
@@ -83,6 +83,7 @@ export type DraftRoomViewModel = {
   }>;
   dataWarnings: string[];
   emptyMessage: string | null;
+  reviewSetupRequired?: boolean;
   configurationNotice?: string | null;
 };
 
@@ -202,6 +203,12 @@ export function buildDraftRoomViewModel(input: {
   const strategy = normalizedStrategy(input.strategy, metadata, input.preferences);
   const effective = effectivePurchases(input.snapshot, input.localCorrections);
   const rebuilt = rebuildTeams(input.snapshot.teams, input.league, effective.purchases);
+  const teamCountMismatch = input.league.teams !== input.snapshot.teams.length;
+  const ledgerMessage = teamCountMismatch
+    ? `Values unavailable: saved setup has ${input.league.teams} teams, but the Sleeper draft has ${input.snapshot.teams.length}. Review setup before using bid guidance.`
+    : rebuilt.unownedPurchases.length > 0
+      ? "Values and maximum bids are unavailable because a purchase references an unknown roster. Review setup or reverse the quarantined local correction."
+      : null;
   const scoredById = new Map(input.projections.flatMap((projection) => {
     const supported = positions.filter((position) => projection.positions.includes(position));
     if (supported.length === 0) return [];
@@ -237,26 +244,28 @@ export function buildDraftRoomViewModel(input: {
   const valuationPurchases = effective.purchases.filter(
     (purchase) => knownIds.has(purchase.playerId) && validRosterIds.has(purchase.rosterId),
   );
-  const replacementLevels = calculateReplacementLevels({
-    league: input.league,
-    players: scored,
-    draftedPlayerIds: draftedIds,
-  });
   let values = new Map<string, PlayerValuation>();
-  let valuationError: string | null = null;
-  try {
-    values = runValuationEngine({
+  let valuationError: string | null = ledgerMessage;
+  if (!ledgerMessage) {
+    const replacementLevels = calculateReplacementLevels({
       league: input.league,
-      strategy,
       players: scored,
-      teams: rebuilt.teams,
-      replacementLevels,
-      myRosterId: input.myRosterId,
-      purchases: valuationPurchases,
-      auctionComplete: input.snapshot.status === "complete",
+      draftedPlayerIds: draftedIds,
     });
-  } catch (error) {
-    valuationError = valuationFailureMessage(error);
+    try {
+      values = runValuationEngine({
+        league: input.league,
+        strategy,
+        players: scored,
+        teams: rebuilt.teams,
+        replacementLevels,
+        myRosterId: input.myRosterId,
+        purchases: valuationPurchases,
+        auctionComplete: input.snapshot.status === "complete",
+      });
+    } catch (error) {
+      valuationError = valuationFailureMessage(error);
+    }
   }
   const available: DraftRoomPlayer[] = [...values.values()]
     .flatMap((value) => {
@@ -283,15 +292,19 @@ export function buildDraftRoomViewModel(input: {
       b.adjustedValue - a.adjustedValue ||
       a.name.localeCompare(b.name),
     );
+  const displayPurchases = ledgerMessage
+    ? onePurchasePerPlayer(input.snapshot.purchases)
+    : effective.purchases;
+  const displayTeamStates = ledgerMessage ? input.snapshot.teams : rebuilt.teams;
   const purchaseByPlayer = new Map(
-    effective.purchases.map((purchase) => [purchase.playerId, purchase]),
+    displayPurchases.map((purchase) => [purchase.playerId, purchase]),
   );
-  const teams: DraftRoomTeam[] = rebuilt.teams.map((team) => ({
+  const teams: DraftRoomTeam[] = displayTeamStates.map((team) => ({
     rosterId: team.rosterId,
     name: team.name,
     remainingBudget: team.remainingBudget,
     openSlots: team.openSlots,
-    maximumLegalBid: maxLegal(team, input.league.minBid),
+    maximumLegalBid: ledgerMessage ? null : maxLegal(team, input.league.minBid),
     players: team.playerIds.map((playerId) => {
       const player = metadata.get(playerId);
       const projection = projectionById.get(playerId);
@@ -305,7 +318,7 @@ export function buildDraftRoomViewModel(input: {
       };
     }),
   }));
-  const orderedPurchases = [...effective.purchases].sort(
+  const orderedPurchases = [...displayPurchases].sort(
     (a, b) => b.pickNo - a.pickNo,
   );
   const latest = orderedPurchases[0];
@@ -352,7 +365,7 @@ export function buildDraftRoomViewModel(input: {
         ? [`${unjoinable.length} purchase${unjoinable.length === 1 ? "" : "s"} could not be joined to player position data.`]
         : []),
       ...(rebuilt.unownedPurchases.length
-        ? [`${rebuilt.unownedPurchases.length} purchase${rebuilt.unownedPurchases.length === 1 ? "" : "s"} referenced an unknown roster.`]
+        ? [`${rebuilt.unownedPurchases.length} purchase${rebuilt.unownedPurchases.length === 1 ? " was" : "s were"} quarantined because ${rebuilt.unownedPurchases.length === 1 ? "it" : "they"} referenced an unknown roster.`]
         : []),
     ],
     emptyMessage: valuationError ?? (input.projections.length === 0
@@ -360,5 +373,6 @@ export function buildDraftRoomViewModel(input: {
       : available.length === 0
         ? "No available projected players remain."
         : null),
+    reviewSetupRequired: ledgerMessage !== null,
   };
 }

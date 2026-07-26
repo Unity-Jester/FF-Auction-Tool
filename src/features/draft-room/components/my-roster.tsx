@@ -25,7 +25,10 @@ export const MyRoster = memo(function MyRoster({
       </div>
       <dl className={styles.budgetSummary}>
         <div><dt>Remaining</dt><dd>${team.remainingBudget}</dd></div>
-        <div><dt>Legal max</dt><dd>${team.maximumLegalBid}</dd></div>
+        <div>
+          <dt>Legal max</dt>
+          <dd>{team.maximumLegalBid === null ? "Unavailable" : `$${team.maximumLegalBid}`}</dd>
+        </div>
         <div><dt>Open slots</dt><dd>{team.openSlots}</dd></div>
       </dl>
       <div className={styles.rosterList}>

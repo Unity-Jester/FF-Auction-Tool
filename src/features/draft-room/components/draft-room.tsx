@@ -1,6 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 
 import type { DraftPurchase, DraftSnapshot } from "@/domain/draft/types";
@@ -94,8 +95,17 @@ export function DraftRoomView({
   const selectedCorrectionTeam = model.teams.find(
     (team) => team.rosterId === Number(correctionTeam),
   );
+  const consumesNewSlot =
+    !existingPurchase ||
+    existingPurchase.team.rosterId !== selectedCorrectionTeam?.rosterId;
+  const correctionCapacityError =
+    consumesNewSlot && selectedCorrectionTeam && selectedCorrectionTeam.openSlots <= 0
+      ? `${selectedCorrectionTeam.name} has no open roster slots for this purchase.`
+      : null;
   const correctionMaximum = selectedCorrectionTeam
-    ? existingPurchase?.team.rosterId === selectedCorrectionTeam.rosterId
+    ? correctionCapacityError
+      ? 0
+      : existingPurchase?.team.rosterId === selectedCorrectionTeam.rosterId
       ? selectedCorrectionTeam.remainingBudget +
         (existingPurchase.player.amount ?? 0) -
         Math.max(0, selectedCorrectionTeam.openSlots) * model.minBid
@@ -194,7 +204,9 @@ export function DraftRoomView({
               <form noValidate onSubmit={(event) => {
                 event.preventDefault();
                 const amount = Number(correctionAmount);
-                if (!Number.isSafeInteger(amount)) {
+                if (correctionCapacityError) {
+                  setCorrectionError(correctionCapacityError);
+                } else if (!Number.isSafeInteger(amount)) {
                   setCorrectionError("Enter a whole-dollar sale price.");
                 } else if (amount < model.minBid) {
                   setCorrectionError(`The minimum bid is $${model.minBid}.`);
@@ -221,12 +233,23 @@ export function DraftRoomView({
                 </label>
                 <button className={styles.criticalAction} type="submit">Save local correction</button>
               </form>
-              {correctionError && <p className={styles.correctionError} role="alert">{correctionError}</p>}
+              {(correctionCapacityError || correctionError) && (
+                <p className={styles.correctionError} role="alert">
+                  {correctionCapacityError ?? correctionError}
+                </p>
+              )}
             </div>
           )}
         </>)}
         {panel("players", styles.playersRegion,
-          model.emptyMessage ? <p className={styles.emptyState}>{model.emptyMessage}</p> : (
+          model.emptyMessage ? (
+            <div className={styles.emptyState}>
+              <p>{model.emptyMessage}</p>
+              {model.reviewSetupRequired && (
+                <Link href={`/draft/${model.draftId}/setup`}>Review setup</Link>
+              )}
+            </div>
+          ) : (
             <PlayerBoard players={model.players} selectedPlayerId={effectiveSelectedPlayerId} onSelectPlayer={select} />
           )
         )}
