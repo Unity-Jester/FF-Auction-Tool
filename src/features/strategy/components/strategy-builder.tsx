@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 
 import type { LeagueConfig, Position } from "@/domain/league/types";
 import type { PlayerPreference, StrategyConfig } from "@/domain/strategy/types";
@@ -22,6 +23,7 @@ export function StrategyBuilder({
   draftId: string;
   league: LeagueConfig;
 }) {
+  const router = useRouter();
   const [strategy, setStrategy] = useState(() => defaultStrategy(league));
   const [player, setPlayer] = useState("");
   const [manualValue, setManualInput] = useState("");
@@ -37,6 +39,8 @@ export function StrategyBuilder({
     total === league.budget &&
     strategy.minReserve >= league.rosterSize * league.minBid &&
     strategy.minReserve <= league.budget;
+  const starterBudget = Math.round(league.budget * strategy.starterBudgetShare);
+  const benchBudget = league.budget - starterBudget;
   const changeBudget = (position: Position, value: string) =>
     setStrategy((current) => ({
       ...current,
@@ -74,7 +78,7 @@ export function StrategyBuilder({
       csvProjectionOverrides: [],
       savedAt: new Date().toISOString(),
     });
-    window.history.replaceState(null, "", `/draft/${draftId}`);
+    router.push(`/draft/${draftId}`);
   };
   return (
     <section className="strategy-layout" aria-labelledby="strategy-title">
@@ -118,6 +122,60 @@ export function StrategyBuilder({
               </label>
             ))}
           </div>
+          <div className="budget-list">
+            <label>
+              Starter budget
+              <input
+                aria-label="Starter budget"
+                type="number"
+                min="0"
+                max={league.budget}
+                value={starterBudget}
+                onChange={(event) =>
+                  setStrategy((current) => ({
+                    ...current,
+                    archetype: "custom",
+                    starterBudgetShare: Math.max(
+                      0,
+                      Math.min(
+                        1,
+                        (Number(event.target.value) || 0) / league.budget,
+                      ),
+                    ),
+                  }))
+                }
+              />
+            </label>
+            <label>
+              Bench budget
+              <input
+                aria-label="Bench budget"
+                type="number"
+                min="0"
+                max={league.budget}
+                value={benchBudget}
+                onChange={(event) =>
+                  setStrategy((current) => ({
+                    ...current,
+                    archetype: "custom",
+                    starterBudgetShare:
+                      1 -
+                      Math.max(
+                        0,
+                        Math.min(
+                          league.budget,
+                          Number(event.target.value) || 0,
+                        ),
+                      ) /
+                        league.budget,
+                  }))
+                }
+              />
+            </label>
+          </div>
+          <p className="section-note">
+            Starter + bench: ${starterBudget + benchBudget}
+          </p>
           <p className={total === league.budget ? "valid" : "error"}>
             {total === league.budget
               ? `Exact budget: $${total}`
@@ -138,6 +196,91 @@ export function StrategyBuilder({
               }
             />
           </label>
+          <div className="budget-list">
+            {strategy.spendingCurve.map((weight, index) => (
+              <label key={index}>
+                Purchase {index + 1}
+                <input
+                  aria-label={`Purchase ${index + 1} curve`}
+                  type="number"
+                  min="0"
+                  max="3"
+                  step=".01"
+                  value={weight}
+                  onChange={(event) =>
+                    setStrategy((current) => ({
+                      ...current,
+                      archetype: "custom",
+                      spendingCurve: current.spendingCurve.map((entry, n) =>
+                        n === index
+                          ? Math.max(
+                              0,
+                              Math.min(3, Number(event.target.value) || 0),
+                            )
+                          : entry,
+                      ),
+                    }))
+                  }
+                />
+              </label>
+            ))}
+          </div>
+          <div className="budget-list">
+            <label>
+              QB approach
+              <select
+                aria-label="QB approach"
+                value={strategy.qbApproach}
+                onChange={(e) =>
+                  setStrategy((c) => ({
+                    ...c,
+                    qbApproach: e.target.value as typeof c.qbApproach,
+                    archetype: "custom",
+                  }))
+                }
+              >
+                <option value="auto">Auto</option>
+                <option value="elite">Elite</option>
+                <option value="value">Value</option>
+              </select>
+            </label>
+            <label>
+              TE approach
+              <select
+                aria-label="TE approach"
+                value={strategy.teApproach}
+                onChange={(e) =>
+                  setStrategy((c) => ({
+                    ...c,
+                    teApproach: e.target.value as typeof c.teApproach,
+                    archetype: "custom",
+                  }))
+                }
+              >
+                <option value="auto">Auto</option>
+                <option value="elite">Elite</option>
+                <option value="value">Value</option>
+              </select>
+            </label>
+            <label>
+              RB build
+              <select
+                aria-label="RB build"
+                value={strategy.rbBuild}
+                onChange={(e) =>
+                  setStrategy((c) => ({
+                    ...c,
+                    rbBuild: e.target.value as typeof c.rbBuild,
+                    archetype: "custom",
+                  }))
+                }
+              >
+                <option value="auto">Neutral</option>
+                <option value="hero">Hero</option>
+                <option value="zero">Zero</option>
+              </select>
+            </label>
+          </div>
         </section>
         <aside className="blueprint">
           <p className="kicker">Projected roster blueprint</p>
@@ -158,7 +301,8 @@ export function StrategyBuilder({
           </ol>
           <p>
             {Math.round(strategy.starterBudgetShare * 100)}% starter spend · QB{" "}
-            {strategy.qbApproach} · RB {strategy.rbBuild}
+            {strategy.qbApproach} · TE {strategy.teApproach} · RB{" "}
+            {strategy.rbBuild}
           </p>
         </aside>
       </div>

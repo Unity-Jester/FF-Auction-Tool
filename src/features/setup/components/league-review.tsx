@@ -1,10 +1,22 @@
 "use client";
-
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-
-import type { LeagueConfig } from "@/domain/league/types";
 import { createLeagueConfig } from "@/domain/league/defaults";
+import type { LeagueConfig, Position } from "@/domain/league/types";
+import { saveLeagueConfig } from "@/persistence/league-storage";
+
+const positions: Position[] = ["QB", "RB", "WR", "TE", "K", "DEF"];
+const scoringFields = [
+  ["Reception points", "reception"],
+  ["Pass yard", "passYard"],
+  ["Pass touchdown", "passTd"],
+  ["Interception", "interception"],
+  ["Rush yard", "rushYard"],
+  ["Rush touchdown", "rushTd"],
+  ["Receiving yard", "receivingYard"],
+  ["Receiving touchdown", "receivingTd"],
+  ["Fumble lost", "fumbleLost"],
+] as const;
 
 export function LeagueReview({
   draftId,
@@ -14,37 +26,28 @@ export function LeagueReview({
   league: LeagueConfig;
 }) {
   const router = useRouter();
-  const [teams, setTeams] = useState(String(league.teams));
-  const [budget, setBudget] = useState(String(league.budget));
-  const [minBid, setMinBid] = useState(String(league.minBid));
-  const [bench, setBench] = useState(String(league.bench));
+  const [values, setValues] = useState(() => ({
+    teams: String(league.teams),
+    budget: String(league.budget),
+    minBid: String(league.minBid),
+    bench: String(league.bench),
+    starters: Object.fromEntries(
+      positions.map((p) => [p, String(league.starters[p])]),
+    ),
+    flex: league.flex.map((f) => ({
+      count: String(f.count),
+      eligible: f.eligible.join(","),
+    })),
+    scoring: Object.fromEntries(
+      scoringFields.map(([, key]) => [key, String(league.scoring[key])]),
+    ),
+    cap: league.capKickerDefenseAtOne,
+  }));
   const [error, setError] = useState<string | null>(null);
-  const submit = () => {
-    try {
-      createLeagueConfig({
-        teams: Number(teams),
-        budget: Number(budget),
-        minBid: Number(minBid),
-        starters: league.starters,
-        bench: Number(bench),
-        flex: league.flex,
-        receptionPoints: league.scoring.reception,
-        scoring: league.scoring,
-        capKickerDefenseAtOne: league.capKickerDefenseAtOne,
-      });
-      router.push(`/draft/${draftId}/strategy`);
-    } catch (reason) {
-      setError(
-        reason instanceof Error
-          ? reason.message
-          : "Check the imported league settings.",
-      );
-    }
-  };
   const field = (
     label: string,
     value: string,
-    setter: (value: string) => void,
+    change: (value: string) => void,
   ) => (
     <label>
       {label}
@@ -53,10 +56,45 @@ export function LeagueReview({
         aria-label={label}
         inputMode="numeric"
         value={value}
-        onChange={(event) => setter(event.target.value)}
+        onChange={(event) => change(event.target.value)}
       />
     </label>
   );
+  const submit = () => {
+    try {
+      const next = createLeagueConfig({
+        teams: Number(values.teams),
+        budget: Number(values.budget),
+        minBid: Number(values.minBid),
+        bench: Number(values.bench),
+        starters: Object.fromEntries(
+          positions.map((p) => [p, Number(values.starters[p])]),
+        ) as LeagueConfig["starters"],
+        flex: values.flex.map((f) => ({
+          count: Number(f.count),
+          eligible: f.eligible
+            .split(",")
+            .map((p) => p.trim())
+            .filter(Boolean) as Position[],
+        })),
+        receptionPoints: Number(values.scoring.reception),
+        scoring: Object.fromEntries(
+          scoringFields
+            .filter(([, key]) => key !== "reception")
+            .map(([, key]) => [key, Number(values.scoring[key])]),
+        ),
+        capKickerDefenseAtOne: values.cap,
+      });
+      saveLeagueConfig(draftId, next);
+      router.push(`/draft/${draftId}/strategy`);
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Check the imported settings.",
+      );
+    }
+  };
   return (
     <section className="review" aria-labelledby="review-title">
       <header>
@@ -71,34 +109,79 @@ export function LeagueReview({
         <section>
           <h2>League basics</h2>
           <div className="field-grid">
-            {field("Teams", teams, setTeams)}
-            {field("Auction budget", budget, setBudget)}
-            {field("Minimum bid", minBid, setMinBid)}
-            {field("Bench slots", bench, setBench)}
+            {field("Teams", values.teams, (v) =>
+              setValues((s) => ({ ...s, teams: v })),
+            )}
+            {field("Auction budget", values.budget, (v) =>
+              setValues((s) => ({ ...s, budget: v })),
+            )}
+            {field("Minimum bid", values.minBid, (v) =>
+              setValues((s) => ({ ...s, minBid: v })),
+            )}
+            {field("Bench slots", values.bench, (v) =>
+              setValues((s) => ({ ...s, bench: v })),
+            )}
+          </div>
+          <h2>Starter slots</h2>
+          <div className="field-grid">
+            {positions.map((p) => (
+              <span key={p}>
+                {field(`${p} starters`, values.starters[p], (v) =>
+                  setValues((s) => ({
+                    ...s,
+                    starters: { ...s.starters, [p]: v },
+                  })),
+                )}
+              </span>
+            ))}
           </div>
         </section>
         <section>
-          <h2>
-            Roster & flex <span className="source">Sleeper import</span>
-          </h2>
-          <p>
-            {Object.entries(league.starters)
-              .filter(([, count]) => count > 0)
-              .map(([position, count]) => `${count} ${position}`)
-              .join(" · ")}{" "}
-            ·{" "}
-            {league.flex
-              .map((slot) => `${slot.count} ${slot.eligible.join("/")} flex`)
-              .join(" · ")}
-          </p>
-          <h2>
-            Scoring <span className="source">Sleeper import</span>
-          </h2>
-          <p>
-            {league.scoring.reception} PPR · {league.scoring.passTd} pass TD ·{" "}
-            {league.scoring.rushTd} rush TD · K/DEF cap{" "}
-            {league.capKickerDefenseAtOne ? "$1" : "off"}
-          </p>
+          <h2>Flex slots</h2>
+          {values.flex.map((flex, index) => (
+            <div className="field-grid" key={index}>
+              {field(`Flex ${index + 1} slots`, flex.count, (v) =>
+                setValues((s) => ({
+                  ...s,
+                  flex: s.flex.map((item, i) =>
+                    i === index ? { ...item, count: v } : item,
+                  ),
+                })),
+              )}
+              {field(`Flex ${index + 1} eligibility`, flex.eligible, (v) =>
+                setValues((s) => ({
+                  ...s,
+                  flex: s.flex.map((item, i) =>
+                    i === index ? { ...item, eligible: v } : item,
+                  ),
+                })),
+              )}
+            </div>
+          ))}
+          <h2>Scoring</h2>
+          <div className="field-grid">
+            {scoringFields.map(([label, key]) => (
+              <span key={key}>
+                {field(label, values.scoring[key], (v) =>
+                  setValues((s) => ({
+                    ...s,
+                    scoring: { ...s.scoring, [key]: v },
+                  })),
+                )}
+              </span>
+            ))}
+          </div>
+          <label className="cap-toggle">
+            <input
+              aria-label="K/DEF at $1"
+              type="checkbox"
+              checked={values.cap}
+              onChange={(event) =>
+                setValues((s) => ({ ...s, cap: event.target.checked }))
+              }
+            />{" "}
+            K/DEF at $1 <i className="source">Sleeper import</i>
+          </label>
         </section>
       </div>
       {error && (
@@ -107,10 +190,7 @@ export function LeagueReview({
         </p>
       )}
       <footer className="strategy-footer">
-        <p>
-          {league.rosterSize} slots imported · budget must cover every slot at
-          the minimum bid.
-        </p>
+        <p>Roster size updates with every corrected slot.</p>
         <button className="primary" onClick={submit}>
           Set strategy
         </button>

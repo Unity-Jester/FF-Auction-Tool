@@ -5,6 +5,7 @@ import { use } from "react";
 import { StrategyBuilder } from "@/features/strategy/components/strategy-builder";
 import { parseDraftApiResponse } from "@/features/draft-session/validate";
 import { draftLoadMessage } from "@/features/connect/draft-load-message";
+import { loadLeagueConfig } from "@/persistence/league-storage";
 
 async function getDraft(draftId: string) {
   const response = await fetch(
@@ -43,7 +44,10 @@ export default function StrategyPage({
     );
   return (
     <main className="stage">
-      <StrategyBuilder draftId={draftId} league={query.data.league} />
+      <StrategyBuilder
+        draftId={draftId}
+        league={loadLeagueConfig(draftId) ?? query.data.league}
+      />
     </main>
   );
 }
