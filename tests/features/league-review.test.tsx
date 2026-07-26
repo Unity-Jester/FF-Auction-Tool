@@ -4,7 +4,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createLeagueConfig } from "@/domain/league/defaults";
 import { LeagueReview } from "@/features/setup/components/league-review";
-import { loadLeagueConfig } from "@/persistence/league-storage";
+import {
+  loadLeagueConfig,
+  resolveLeagueConfig,
+} from "@/persistence/league-storage";
 
 const push = vi.fn();
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
@@ -66,5 +69,27 @@ describe("LeagueReview", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(
       "Budget must cover every roster slot",
     );
+  });
+
+  it("shows saved corrections again after strategy or draft navigation", async () => {
+    const user = userEvent.setup();
+    const first = render(
+      <LeagueReview draftId="123456789012345678" league={league} />,
+    );
+    await user.clear(screen.getByLabelText("Teams"));
+    await user.type(screen.getByLabelText("Teams"), "10");
+    await user.clear(screen.getByLabelText("TE reception bonus"));
+    await user.type(screen.getByLabelText("TE reception bonus"), "1.5");
+    await user.click(screen.getByRole("button", { name: "Set strategy" }));
+    first.unmount();
+
+    render(
+      <LeagueReview
+        draftId="123456789012345678"
+        league={resolveLeagueConfig("123456789012345678", league)}
+      />,
+    );
+    expect(screen.getByLabelText("Teams")).toHaveValue("10");
+    expect(screen.getByLabelText("TE reception bonus")).toHaveValue("1.5");
   });
 });

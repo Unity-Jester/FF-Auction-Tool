@@ -5,6 +5,7 @@ import { use } from "react";
 import { LeagueReview } from "@/features/setup/components/league-review";
 import { parseDraftApiResponse } from "@/features/draft-session/validate";
 import { draftLoadMessage } from "@/features/connect/draft-load-message";
+import { resolveLeagueConfig } from "@/persistence/league-storage";
 
 async function getDraft(draftId: string) {
   const response = await fetch(
@@ -44,7 +45,10 @@ export default function SetupPage({
     );
   return (
     <main className="stage">
-      <LeagueReview draftId={draftId} league={query.data.league} />
+      <LeagueReview
+        draftId={draftId}
+        league={resolveLeagueConfig(draftId, query.data.league)}
+      />
     </main>
   );
 }

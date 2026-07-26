@@ -30,3 +30,10 @@ export function loadLeagueConfig(draftId: string): LeagueConfig | null {
     return null;
   }
 }
+
+export function resolveLeagueConfig(
+  draftId: string,
+  importedLeague: LeagueConfig,
+): LeagueConfig {
+  return loadLeagueConfig(draftId) ?? importedLeague;
+}

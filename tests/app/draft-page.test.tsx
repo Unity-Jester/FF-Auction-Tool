@@ -21,5 +21,9 @@ describe("DraftPage", () => {
       "href",
       "/draft/123456789012345678/setup",
     );
+    expect(screen.queryByRole("main")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("region", { name: "Draft room is next." }),
+    ).toBeInTheDocument();
   });
 });

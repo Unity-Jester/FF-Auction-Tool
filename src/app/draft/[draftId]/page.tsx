@@ -8,7 +8,7 @@ export default async function DraftPage({
   const { draftId } = await params;
 
   return (
-    <main className="stage draft-shell" aria-labelledby="draft-shell-title">
+    <section className="stage draft-shell" aria-labelledby="draft-shell-title">
       <p className="kicker">04 / Draft room</p>
       <h1 id="draft-shell-title">Draft room is next.</h1>
       <p className="draft-shell-copy">
@@ -22,6 +22,6 @@ export default async function DraftPage({
         </Link>
         <Link href={`/draft/${draftId}/strategy`}>Adjust strategy</Link>
       </div>
-    </main>
+    </section>
   );
 }
