@@ -51,6 +51,7 @@ describe("useDraftSync", () => {
       .fn()
       .mockRejectedValueOnce(new Error("offline"))
       .mockRejectedValueOnce(new Error("offline"))
+      .mockRejectedValueOnce(new Error("offline"))
       .mockResolvedValue(response("drafting"));
     renderHook(() => useDraftSync("draft-1", fetcher), { wrapper });
 
@@ -64,6 +65,10 @@ describe("useDraftSync", () => {
     expect(fetcher).toHaveBeenCalledTimes(2);
     await act(async () => { await vi.advanceTimersByTimeAsync(1_001); });
     expect(fetcher).toHaveBeenCalledTimes(3);
+    await act(async () => { await vi.advanceTimersByTimeAsync(29_000); });
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_001); });
+    expect(fetcher).toHaveBeenCalledTimes(4);
   });
 
   it("does not request an invalid draft ID", () => {
