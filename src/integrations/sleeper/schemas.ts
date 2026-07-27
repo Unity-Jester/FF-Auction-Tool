@@ -9,7 +9,7 @@ export const SleeperUserSchema = z
     user_id: identifier,
     display_name: z.string().optional(),
     username: z.string().optional(),
-    metadata: settings.optional(),
+    metadata: settings.nullish(),
   })
   .passthrough();
 
@@ -28,7 +28,7 @@ export const SleeperDraftSchema = z
     type: z.string().min(1),
     status: z.string().min(1),
     settings,
-    metadata: settings.optional(),
+    metadata: settings.nullish(),
     slot_to_roster_id: z.record(z.string(), identifier).optional(),
     draft_order: z
       .record(z.string(), z.number().int().positive())
@@ -68,7 +68,7 @@ export const SleeperRosterSchema = z
     owner_id: nullableIdentifier.optional(),
     players: z.array(identifier).nullable().optional(),
     settings: settings.optional(),
-    metadata: settings.optional(),
+    metadata: settings.nullish(),
   })
   .passthrough();
 

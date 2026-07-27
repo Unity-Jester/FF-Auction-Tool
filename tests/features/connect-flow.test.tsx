@@ -41,13 +41,13 @@ describe("ConnectForm", () => {
       vi.fn().mockResolvedValue(
         new Response(
           JSON.stringify({
-            user: { displayName: "Ada" },
-            season: "2026",
             drafts: [
               {
                 draftId: "123456789012345678",
+                leagueId: "league-1",
+                name: "Friday auction",
                 status: "drafting",
-                metadata: { name: "Friday auction" },
+                type: "auction",
               },
             ],
           }),

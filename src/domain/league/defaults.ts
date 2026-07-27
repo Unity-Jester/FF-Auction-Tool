@@ -3,7 +3,8 @@ import type { FlexSlot, LeagueConfig, Position, ScoringRules } from "./types";
 const positions: Position[] = ["QB", "RB", "WR", "TE", "K", "DEF"];
 export const LEAGUE_LIMITS = {
   teams: 32,
-  budget: Number.MAX_SAFE_INTEGER,
+  budget: 100_000,
+  minBid: 10_000,
   rosterSlotsPerGroup: 64,
   rosterSize: 100,
   flexGroups: 16,
@@ -152,6 +153,14 @@ export function createLeagueConfig(input: CreateLeagueConfigInput): LeagueConfig
 
   const minBid = input.minBid ?? 1;
   assertPositiveInteger(minBid, "Minimum bid");
+  assertAtMost(
+    minBid,
+    LEAGUE_LIMITS.minBid,
+    `Minimum bid cannot exceed $${LEAGUE_LIMITS.minBid.toLocaleString("en-US")}`,
+  );
+  if (minBid > input.budget) {
+    throw new Error("Minimum bid cannot exceed the auction budget");
+  }
   assertNonNegativeInteger(input.bench, "Bench");
   assertAtMost(
     input.bench,

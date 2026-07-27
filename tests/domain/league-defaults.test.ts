@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { createLeagueConfig } from "@/domain/league/defaults";
+import {
+  createLeagueConfig,
+  LEAGUE_LIMITS,
+} from "@/domain/league/defaults";
 import type { Position } from "@/domain/league/types";
 
 const standardStarters = {
@@ -18,8 +21,8 @@ describe("createLeagueConfig", () => {
     ["teams", { teams: 33 }, "Teams cannot exceed 32"],
     [
       "budget",
-      { budget: Number.MAX_SAFE_INTEGER + 1 },
-      "Budget must be a positive integer",
+      { budget: 100_001 },
+      "Budget cannot exceed $100,000",
     ],
     ["bench", { bench: 65 }, "Bench cannot exceed 64"],
   ])("rejects an unrealistic manual %s correction", (_field, patch, message) => {
@@ -189,6 +192,35 @@ describe("createLeagueConfig", () => {
         receptionPoints: 0.5,
       }),
     ).toThrow("Minimum bid must be a positive integer");
+  });
+
+  it("enforces documented fantasy-auction money limits", () => {
+    expect(LEAGUE_LIMITS).toMatchObject({
+      budget: 100_000,
+      minBid: 10_000,
+    });
+    expect(() =>
+      createLeagueConfig({
+        teams: 12,
+        budget: 100_000,
+        minBid: 10_001,
+        starters: standardStarters,
+        bench: 0,
+        flex: [],
+        receptionPoints: 0.5,
+      }),
+    ).toThrow("Minimum bid cannot exceed $10,000");
+    expect(() =>
+      createLeagueConfig({
+        teams: 12,
+        budget: 200,
+        minBid: 201,
+        starters: standardStarters,
+        bench: 0,
+        flex: [],
+        receptionPoints: 0.5,
+      }),
+    ).toThrow("Minimum bid cannot exceed the auction budget");
   });
 
   it("merges scoring overrides with the default scoring rules", () => {

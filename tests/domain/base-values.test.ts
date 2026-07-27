@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { TeamDraftState } from "@/domain/draft/types";
-import { createLeagueConfig } from "@/domain/league/defaults";
+import {
+  createLeagueConfig,
+  LEAGUE_LIMITS,
+} from "@/domain/league/defaults";
 import type { Position } from "@/domain/league/types";
 import type { StrategyConfig } from "@/domain/strategy/types";
 import {
@@ -797,8 +800,8 @@ describe("calculateBaseValues", () => {
     ).toBe(true);
   });
 
-  it("allocates a safe near-limit budget exactly", () => {
-    const remainingBudget = Number.MAX_SAFE_INTEGER;
+  it("allocates the allowed budget ceiling exactly", () => {
+    const remainingBudget = LEAGUE_LIMITS.budget;
     const values = calculateBaseValues(
       baseInput({
         league: league({
@@ -832,7 +835,7 @@ describe("calculateBaseValues", () => {
   });
 
   it("does not overstate a vanishingly small normalized weight", () => {
-    const remainingBudget = Number.MAX_SAFE_INTEGER;
+    const remainingBudget = LEAGUE_LIMITS.budget;
     const values = calculateBaseValues(
       baseInput({
         league: league({

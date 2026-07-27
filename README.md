@@ -23,6 +23,11 @@ clear explanation. Sleeper does not expose a dependable live nomination through
 its public API, so the app focuses on completed purchases and lets the user select
 the current player.
 
+League review accepts up to 32 teams, a $100,000 auction budget, and a $10,000
+minimum bid. The minimum bid cannot exceed the auction budget, and the budget
+must still cover every roster slot. These generous ceilings reject malformed
+imports without limiting realistic fantasy formats.
+
 ## Guest mode and privacy
 
 Guest mode provides the complete setup, strategy, draft-room, CSV import, and
@@ -38,6 +43,10 @@ drafts, changes a league, or writes to Sleeper. The app does not store raw Sleep
 draft responses or draft history in a database. The repository contains compact
 public player and projection snapshots; it does not contain Sleeper usernames or
 league-member profiles.
+Cached draft responses expose only the normalized snapshot and setup warnings;
+raw account identifiers and normalization diagnostics stay server-side. Username
+discovery returns only the auction name, identifier, status, type, and league
+identifier needed to present the result.
 
 ## Projections and CSV overrides
 
@@ -118,6 +127,9 @@ command. Monitor Upstash command totals together with route 429, protection 503,
 and Sleeper 429 counts. If the shared store is unavailable, upstream-backed routes
 return a safe protection error; a single-instance deployment can deliberately
 fall back to the bounded in-memory store by removing both Upstash variables.
+Upstash REST calls have their own two-second deadline and reject responses larger
+than 64 KiB before parsing, so a stalled or malformed shared store cannot hold an
+origin request open or return its response details to the browser.
 
 Deploy as a standard Next.js application:
 

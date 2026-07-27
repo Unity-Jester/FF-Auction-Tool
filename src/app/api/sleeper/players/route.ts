@@ -25,7 +25,10 @@ export function createPlayersHandler(
   limiter: RateLimiter = sleeperRateLimiter,
 ) {
   return async function GET(request: Request): Promise<NextResponse> {
-    const rateLimit = await limiter.check(requestClientKey(request));
+    const rateLimit = await limiter.check(
+      requestClientKey(request),
+      request.signal,
+    );
     if (!rateLimit.allowed) {
       return NextResponse.json(
         {

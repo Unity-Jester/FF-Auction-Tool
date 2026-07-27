@@ -6,12 +6,12 @@ import { useState } from "react";
 import { parseDraftReference } from "@/integrations/sleeper/parse-draft-reference";
 
 type Discovery = {
-  user: { displayName: string };
-  season: string;
   drafts: Array<{
     draftId: string;
+    leagueId: string | null;
+    name: string;
     status: string;
-    metadata?: { name?: string };
+    type: "auction";
   }>;
 };
 
@@ -97,7 +97,7 @@ export function ConnectForm() {
         >
           <p>Current auctions for this account</p>
           {drafts.map((draft) => {
-            const name = draft.metadata?.name || `Auction ${draft.draftId}`;
+            const name = draft.name;
             return (
               <button
                 key={draft.draftId}

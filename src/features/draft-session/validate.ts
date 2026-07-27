@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { LEAGUE_LIMITS } from "@/domain/league/defaults";
 import type { DraftSnapshot } from "@/domain/draft/types";
 import type { DraftWarning } from "@/integrations/sleeper/normalize-draft";
 
@@ -38,8 +39,8 @@ const scoring = z
 const league = z
   .object({
     teams: positiveSafeInteger,
-    budget: positiveSafeInteger,
-    minBid: positiveSafeInteger,
+    budget: positiveSafeInteger.max(LEAGUE_LIMITS.budget),
+    minBid: positiveSafeInteger.max(LEAGUE_LIMITS.minBid),
     starters: positionCounts,
     bench: nonnegativeSafeInteger,
     rosterSize: positiveSafeInteger,
@@ -54,7 +55,16 @@ const league = z
     scoring,
     capKickerDefenseAtOne: z.boolean(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (value.minBid > value.budget) {
+      context.addIssue({
+        code: "custom",
+        message: "Minimum bid cannot exceed the auction budget",
+        path: ["minBid"],
+      });
+    }
+  });
 
 const team = z
   .object({

@@ -3,7 +3,10 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
-import { createLeagueConfig } from "@/domain/league/defaults";
+import {
+  createLeagueConfig,
+  LEAGUE_LIMITS,
+} from "@/domain/league/defaults";
 import type { DraftSnapshot } from "@/domain/draft/types";
 import type { LeagueConfig, Position } from "@/domain/league/types";
 import type { DraftWarning } from "@/integrations/sleeper/normalize-draft";
@@ -140,7 +143,12 @@ export function LeagueReview({
     key: string,
     value: string,
     change: (value: string) => void,
-    options: { scoringKey?: string; numeric?: boolean } = {},
+    options: {
+      scoringKey?: string;
+      numeric?: boolean;
+      maximum?: number;
+      minimum?: number;
+    } = {},
   ) => (
     <label>
       {label}
@@ -148,6 +156,8 @@ export function LeagueReview({
       <input
         aria-label={label}
         inputMode={options.numeric === false ? "text" : "decimal"}
+        max={options.maximum}
+        min={options.minimum}
         value={value}
         onChange={(event) => {
           markEdited(key);
@@ -171,6 +181,9 @@ export function LeagueReview({
   const feasible =
     rosterSize > 0 &&
     Number.isSafeInteger(rosterSize) &&
+    Number(values.budget) <= LEAGUE_LIMITS.budget &&
+    Number(values.minBid) <= LEAGUE_LIMITS.minBid &&
+    Number(values.minBid) <= Number(values.budget) &&
     Number(values.budget) >= rosterSize * Number(values.minBid);
 
   const submit = () => {
@@ -279,11 +292,21 @@ export function LeagueReview({
             {field("Teams", "teams", values.teams, (value) =>
               setValues((current) => ({ ...current, teams: value })),
             )}
-            {field("Auction budget", "budget", values.budget, (value) =>
-              setValues((current) => ({ ...current, budget: value })),
+            {field(
+              "Auction budget",
+              "budget",
+              values.budget,
+              (value) =>
+                setValues((current) => ({ ...current, budget: value })),
+              { minimum: 1, maximum: LEAGUE_LIMITS.budget },
             )}
-            {field("Minimum bid", "minBid", values.minBid, (value) =>
-              setValues((current) => ({ ...current, minBid: value })),
+            {field(
+              "Minimum bid",
+              "minBid",
+              values.minBid,
+              (value) =>
+                setValues((current) => ({ ...current, minBid: value })),
+              { minimum: 1, maximum: LEAGUE_LIMITS.minBid },
             )}
             {field("Bench slots", "bench", values.bench, (value) =>
               setValues((current) => ({ ...current, bench: value })),

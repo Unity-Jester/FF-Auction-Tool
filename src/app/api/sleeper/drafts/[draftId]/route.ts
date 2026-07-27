@@ -8,6 +8,7 @@ import {
 import {
   normalizeDraft,
   UnsupportedDraftTypeError,
+  type NormalizedDraft,
 } from "@/integrations/sleeper/normalize-draft";
 import { parseDraftReference } from "@/integrations/sleeper/parse-draft-reference";
 import {
@@ -51,6 +52,13 @@ type DetailClient = {
     options?: SleeperRequestOptions,
   ): Promise<SleeperRoster[]>;
 };
+
+function publicDraftResponse(draft: NormalizedDraft) {
+  return {
+    snapshot: draft.snapshot,
+    warnings: draft.warnings,
+  };
+}
 
 function errorResponse(error: unknown): NextResponse {
   if (error instanceof UnsupportedDraftTypeError) {
@@ -123,12 +131,15 @@ export function createDraftHandler(
           { status: 502 },
         );
       }
-      return NextResponse.json(fixtureResponse, {
+      return NextResponse.json(publicDraftResponse(fixtureResponse), {
         headers: { "Cache-Control": "no-store" },
       });
     }
 
-    const rateLimit = await limiter.check(requestClientKey(request));
+    const rateLimit = await limiter.check(
+      requestClientKey(request),
+      request.signal,
+    );
     if (rateLimit.storeUnavailable) {
       return NextResponse.json(
         {
@@ -185,7 +196,9 @@ export function createDraftHandler(
         ]);
       }
       return NextResponse.json(
-        normalizeDraft({ draft, picks, league, users, rosters }),
+        publicDraftResponse(
+          normalizeDraft({ draft, picks, league, users, rosters }),
+        ),
         {
           headers: {
             "Cache-Control": "public, s-maxage=1, stale-while-revalidate=2",
@@ -198,7 +211,7 @@ export function createDraftHandler(
         error.code === "RATE_LIMITED" &&
         error.retryAfterSeconds
       ) {
-        await limiter.blockFor(error.retryAfterSeconds);
+        await limiter.blockFor(error.retryAfterSeconds, request.signal);
       }
       return errorResponse(error);
     }

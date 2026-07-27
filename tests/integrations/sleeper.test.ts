@@ -14,6 +14,11 @@ import {
 import { createDraftHandler } from "@/app/api/sleeper/drafts/[draftId]/route";
 import { createPlayersHandler } from "@/app/api/sleeper/players/route";
 import { createUserDraftsHandler } from "@/app/api/sleeper/users/[username]/drafts/route";
+import {
+  SleeperDraftSchema,
+  SleeperRosterSchema,
+  SleeperUserSchema,
+} from "@/integrations/sleeper/schemas";
 import keeperRosterFixture from "../fixtures/sleeper/keeper-roster-without-pick.json";
 
 const auctionDraft = {
@@ -860,6 +865,29 @@ describe("Sleeper rate limiter", () => {
 });
 
 describe("Sleeper routes", () => {
+  it("accepts live Sleeper resources whose optional metadata is null", () => {
+    expect(
+      SleeperUserSchema.safeParse({
+        user_id: "user-1",
+        display_name: "Ada",
+        metadata: null,
+      }).success,
+    ).toBe(true);
+    expect(
+      SleeperDraftSchema.safeParse({
+        ...auctionDraft,
+        metadata: null,
+      }).success,
+    ).toBe(true);
+    expect(
+      SleeperRosterSchema.safeParse({
+        roster_id: 1,
+        owner_id: "user-1",
+        metadata: null,
+      }).success,
+    ).toBe(true);
+  });
+
   it("discovers only current-season auction drafts, including mocks", async () => {
     const client = {
       getUser: vi.fn(async () => ({ user_id: "u1", display_name: "Ada" })),
@@ -877,11 +905,22 @@ describe("Sleeper routes", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({
-      season: "2026",
+    expect(await response.json()).toEqual({
       drafts: [
-        { draftId: auctionDraft.draft_id, leagueId: "league-1" },
-        { draftId: "222222222222222222", leagueId: null },
+        {
+          draftId: auctionDraft.draft_id,
+          leagueId: "league-1",
+          name: `Auction ${auctionDraft.draft_id}`,
+          status: "drafting",
+          type: "auction",
+        },
+        {
+          draftId: "222222222222222222",
+          leagueId: null,
+          name: "Auction 222222222222222222",
+          status: "drafting",
+          type: "auction",
+        },
       ],
     });
     expect(client.getUserDrafts).toHaveBeenCalledWith(
@@ -933,14 +972,18 @@ describe("Sleeper routes", () => {
 
     expect(response.status).toBe(200);
     expect(body.drafts).toEqual([
-      expect.objectContaining({ draftId: auctionDraft.draft_id }),
+      {
+        draftId: auctionDraft.draft_id,
+        leagueId: "league-1",
+        name: `Auction ${auctionDraft.draft_id}`,
+        status: "drafting",
+        type: "auction",
+      },
     ]);
-    expect(body.quarantinedDrafts).toEqual([
-      { reason: "INVALID_DRAFT", index: 2 },
-    ]);
-    expect(JSON.stringify(body.quarantinedDrafts)).not.toContain(
-      "do-not-return",
-    );
+    expect(Object.keys(body)).toEqual(["drafts"]);
+    expect(JSON.stringify(body)).not.toContain("do-not-return");
+    expect(JSON.stringify(body)).not.toContain("\"settings\"");
+    expect(JSON.stringify(body)).not.toContain("\"metadata\"");
   });
 
   it("returns 404 when Sleeper answers an unknown username with null", async () => {
@@ -1016,15 +1059,19 @@ describe("Sleeper routes", () => {
       expect.objectContaining({ next: { revalidate: 2 } }),
     );
     const mockBody = await mockResponse.json();
+    expect(Object.keys(mockBody).sort()).toEqual(["snapshot", "warnings"]);
     expect(mockBody.snapshot.teams).toEqual([
       expect.objectContaining({ rosterId: 7, name: "Team 1" }),
       expect.objectContaining({ rosterId: 2, name: "Team 2" }),
     ]);
+    expect(mockBody.snapshot.teams.every(
+      (team: Record<string, unknown>) => !("userId" in team),
+    )).toBe(true);
     expect(mockBody.players).toBeUndefined();
     expect(JSON.stringify(mockBody).length).toBeLessThan(1_000_000);
   });
 
-  it("carries schema-invalid picks through the client and quarantines only that pick", async () => {
+  it("omits internal pick quarantine details from the public draft response", async () => {
     const mockDraft = {
       ...auctionDraft,
       league_id: null,
@@ -1073,9 +1120,8 @@ describe("Sleeper routes", () => {
     expect(body.snapshot.purchases).toEqual([
       expect.objectContaining({ playerId: "4046", rosterId: 7, amount: 42 }),
     ]);
-    expect(body.quarantinedPicks).toEqual([
-      expect.objectContaining({ reason: "INVALID_PICK" }),
-    ]);
+    expect(Object.keys(body).sort()).toEqual(["snapshot", "warnings"]);
+    expect(body.quarantinedPicks).toBeUndefined();
     expect(body.snapshot.teams).toEqual([
       expect.objectContaining({ rosterId: 7, name: "Team 1" }),
       expect.objectContaining({ rosterId: 2, name: "Team 2" }),

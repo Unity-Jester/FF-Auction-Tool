@@ -87,6 +87,9 @@ describe("draft response validation", () => {
 
   it.each([
     ["decimal league budget", { ...snapshot, league: { ...snapshot.league, budget: 200.5 } }],
+    ["over-limit league budget", { ...snapshot, league: { ...snapshot.league, budget: 100_001 } }],
+    ["over-limit minimum bid", { ...snapshot, league: { ...snapshot.league, minBid: 10_001 } }],
+    ["minimum bid over budget", { ...snapshot, league: { ...snapshot.league, minBid: 201 } }],
     ["unsafe minimum bid", { ...snapshot, league: { ...snapshot.league, minBid: Number.MAX_SAFE_INTEGER + 1 } }],
     ["decimal remaining budget", { ...snapshot, teams: [{ ...snapshot.teams[0], remainingBudget: 199.5 }] }],
     ["unsafe roster ID", { ...snapshot, teams: [{ ...snapshot.teams[0], rosterId: Number.MAX_SAFE_INTEGER + 1 }] }],

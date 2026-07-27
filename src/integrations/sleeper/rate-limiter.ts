@@ -17,20 +17,29 @@ type AtomicRateLimitIncrement = RateLimitIncrement & {
 };
 
 export interface RateLimitStore {
-  increment(key: string, windowMs: number): Promise<RateLimitIncrement>;
-  getBlockedUntil(): Promise<number | null>;
+  increment(
+    key: string,
+    windowMs: number,
+    signal?: AbortSignal,
+  ): Promise<RateLimitIncrement>;
+  getBlockedUntil(signal?: AbortSignal): Promise<number | null>;
   incrementUnlessBlocked?(
     key: string,
     windowMs: number,
     now: number,
+    signal?: AbortSignal,
   ): Promise<AtomicRateLimitIncrement>;
-  setBlockedUntil(timestamp: number, ttlMs: number): Promise<void>;
+  setBlockedUntil(
+    timestamp: number,
+    ttlMs: number,
+    signal?: AbortSignal,
+  ): Promise<void>;
   readonly size?: number;
 }
 
 export type RateLimiter = {
-  check(key: string): Promise<RateLimitDecision>;
-  blockFor(retryAfterSeconds: number): Promise<boolean>;
+  check(key: string, signal?: AbortSignal): Promise<RateLimitDecision>;
+  blockFor(retryAfterSeconds: number, signal?: AbortSignal): Promise<boolean>;
   readonly size: number;
 };
 
@@ -133,7 +142,12 @@ type UpstashOptions = {
   url: string;
   token: string;
   fetchFn?: RestFetch;
+  timeoutMs?: number;
+  maxResponseBytes?: number;
 };
+
+export const DEFAULT_UPSTASH_TIMEOUT_MS = 2_000;
+export const MAX_UPSTASH_RESPONSE_BYTES = 64 * 1024;
 
 const incrementScript =
   "local count=redis.call('INCR',KEYS[1]); if count==1 then redis.call('PEXPIRE',KEYS[1],ARGV[1]) end; local ttl=redis.call('PTTL',KEYS[1]); return {count,ttl}";
@@ -147,24 +161,137 @@ export function createUpstashRateLimitStore(
 ): RateLimitStore {
   const url = options.url.replace(/\/+$/, "");
   const fetchFn = options.fetchFn ?? fetch;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_UPSTASH_TIMEOUT_MS;
+  const maxResponseBytes =
+    options.maxResponseBytes ?? MAX_UPSTASH_RESPONSE_BYTES;
   if (!url || !options.token)
     throw new Error("Upstash URL and token are required");
+  if (timeoutMs <= 0 || maxResponseBytes <= 0) {
+    throw new Error("Upstash request limits must be positive");
+  }
 
-  async function command<T>(body: unknown[]): Promise<T> {
-    const response = await fetchFn(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${options.token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
-    if (!response.ok) throw new Error("Shared rate-limit store unavailable");
-    const payload = (await response.json()) as { result?: T; error?: string };
-    if (payload.error || payload.result === undefined) {
-      throw new Error("Shared rate-limit store returned malformed data");
+  async function readBoundedJson(
+    response: Response,
+    signal: AbortSignal,
+  ): Promise<unknown> {
+    const declaredLength = response.headers.get("content-length");
+    if (declaredLength !== null) {
+      const bytes = Number(declaredLength);
+      if (
+        Number.isFinite(bytes) &&
+        bytes >= 0 &&
+        bytes > maxResponseBytes
+      ) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new Error("oversized");
+      }
     }
-    return payload.result;
+    if (!response.body) throw new Error("missing body");
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    while (true) {
+      const { done, value } = await new Promise<ReadableStreamReadResult<Uint8Array>>(
+        (resolve, reject) => {
+          const abort = () => {
+            void reader.cancel().catch(() => undefined);
+            reject(new DOMException("Request aborted", "AbortError"));
+          };
+          if (signal.aborted) {
+            abort();
+            return;
+          }
+          signal.addEventListener("abort", abort, { once: true });
+          void reader.read().then(
+            (result) => {
+              signal.removeEventListener("abort", abort);
+              resolve(result);
+            },
+            (error) => {
+              signal.removeEventListener("abort", abort);
+              reject(error);
+            },
+          );
+        },
+      );
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxResponseBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new Error("oversized");
+      }
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return JSON.parse(new TextDecoder().decode(bytes));
+  }
+
+  async function command<T>(
+    body: unknown[],
+    callerSignal?: AbortSignal,
+  ): Promise<T> {
+    const controller = new AbortController();
+    const forwardCallerAbort = () =>
+      controller.abort(callerSignal?.reason);
+    if (callerSignal?.aborted) forwardCallerAbort();
+    else {
+      callerSignal?.addEventListener("abort", forwardCallerAbort, {
+        once: true,
+      });
+    }
+    const timeout = setTimeout(
+      () => controller.abort(new DOMException("Timed out", "TimeoutError")),
+      timeoutMs,
+    );
+    const aborted = new Promise<never>((_resolve, reject) => {
+      const rejectAbort = () =>
+        reject(new DOMException("Request aborted", "AbortError"));
+      if (controller.signal.aborted) rejectAbort();
+      else controller.signal.addEventListener("abort", rejectAbort, {
+        once: true,
+      });
+    });
+    try {
+      const response = await Promise.race([
+        fetchFn(url, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${options.token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        }),
+        aborted,
+      ]);
+      if (!response.ok) throw new Error("non-success");
+      const payload = (await readBoundedJson(
+        response,
+        controller.signal,
+      )) as {
+        result?: T;
+        error?: string;
+      };
+      if (
+        !payload ||
+        typeof payload !== "object" ||
+        payload.error ||
+        payload.result === undefined
+      ) {
+        throw new Error("malformed");
+      }
+      return payload.result;
+    } catch {
+      throw new Error("Shared rate-limit store unavailable");
+    } finally {
+      clearTimeout(timeout);
+      callerSignal?.removeEventListener("abort", forwardCallerAbort);
+    }
   }
 
   return {
@@ -172,6 +299,7 @@ export function createUpstashRateLimitStore(
       key: string,
       windowMs: number,
       now: number,
+      signal?: AbortSignal,
     ): Promise<AtomicRateLimitIncrement> {
       const result = await command<
         [number, number, number] | [number, number]
@@ -183,7 +311,7 @@ export function createUpstashRateLimitStore(
         `sleeper:rate:${key}`,
         String(windowMs),
         String(now),
-      ]);
+      ], signal);
       const legacyResult = result.length === 2;
       const blockedUntil = legacyResult ? 0 : Number(result[0]);
       const count = Number(result[legacyResult ? 0 : 1]);
@@ -204,6 +332,7 @@ export function createUpstashRateLimitStore(
     async increment(
       key: string,
       windowMs: number,
+      signal?: AbortSignal,
     ): Promise<RateLimitIncrement> {
       const result = await command<[number, number]>([
         "EVAL",
@@ -211,7 +340,7 @@ export function createUpstashRateLimitStore(
         "1",
         `sleeper:rate:${key}`,
         String(windowMs),
-      ]);
+      ], signal);
       const count = Number(result[0]);
       const ttlMs = Number(result[1]);
       if (!Number.isFinite(count) || !Number.isFinite(ttlMs)) {
@@ -222,16 +351,20 @@ export function createUpstashRateLimitStore(
         retryAfterSeconds: Math.max(1, Math.ceil(ttlMs / 1_000)),
       };
     },
-    async getBlockedUntil(): Promise<number | null> {
+    async getBlockedUntil(signal?: AbortSignal): Promise<number | null> {
       const result = await command<string | null>([
         "GET",
         "sleeper:blocked-until",
-      ]);
+      ], signal);
       if (result === null) return null;
       const timestamp = Number(result);
       return Number.isFinite(timestamp) ? timestamp : null;
     },
-    async setBlockedUntil(timestamp: number, ttlMs: number): Promise<void> {
+    async setBlockedUntil(
+      timestamp: number,
+      ttlMs: number,
+      signal?: AbortSignal,
+    ): Promise<void> {
       await command<number>([
         "EVAL",
         blockScript,
@@ -239,7 +372,7 @@ export function createUpstashRateLimitStore(
         "sleeper:blocked-until",
         String(timestamp),
         String(ttlMs),
-      ]);
+      ], signal);
     },
   };
 }
@@ -263,7 +396,10 @@ export function createRateLimiter(
   }
 
   return {
-    async check(key: string): Promise<RateLimitDecision> {
+    async check(
+      key: string,
+      signal?: AbortSignal,
+    ): Promise<RateLimitDecision> {
       try {
         const currentTime = now();
         if (store.incrementUnlessBlocked) {
@@ -271,6 +407,7 @@ export function createRateLimiter(
             key,
             windowMs,
             currentTime,
+            signal,
           );
           if (
             increment.blockedUntil !== null &&
@@ -293,7 +430,7 @@ export function createRateLimiter(
               }
             : { allowed: true };
         }
-        const blockedUntil = await store.getBlockedUntil();
+        const blockedUntil = await store.getBlockedUntil(signal);
         if (blockedUntil !== null && blockedUntil > currentTime) {
           return {
             allowed: false,
@@ -303,7 +440,7 @@ export function createRateLimiter(
             ),
           };
         }
-        const increment = await store.increment(key, windowMs);
+        const increment = await store.increment(key, windowMs, signal);
         if (increment.count > limit) {
           return {
             allowed: false,
@@ -315,7 +452,10 @@ export function createRateLimiter(
         return { allowed: true, storeUnavailable: true };
       }
     },
-    async blockFor(retryAfterSeconds: number): Promise<boolean> {
+    async blockFor(
+      retryAfterSeconds: number,
+      signal?: AbortSignal,
+    ): Promise<boolean> {
       const boundedSeconds = Math.min(
         300,
         Math.max(1, Math.ceil(retryAfterSeconds)),
@@ -324,6 +464,7 @@ export function createRateLimiter(
         await store.setBlockedUntil(
           now() + boundedSeconds * 1_000,
           boundedSeconds * 1_000,
+          signal,
         );
         return true;
       } catch {

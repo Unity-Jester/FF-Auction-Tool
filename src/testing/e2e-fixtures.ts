@@ -99,25 +99,22 @@ export function fixtureDraftResponse(request: Request, draftId: string) {
 export function fixtureDiscoveredDrafts(username: string) {
   if (!fixtureModeEnabled() || username !== E2E_USERNAME) return null;
   return {
-    user: { userId: "fixture-user", displayName: "Auction Guest" },
-    season: "2026",
     drafts: [
       {
         draftId: E2E_REAL_DRAFT_ID,
         leagueId: "fixture-league",
+        name: "Recorded league auction",
         status: "drafting",
-        settings: mockDraft.settings,
-        metadata: { name: "Recorded league auction" },
+        type: "auction",
       },
       {
         draftId: E2E_DRAFT_ID,
         leagueId: null,
+        name: "Recorded mock auction",
         status: "drafting",
-        settings: mockDraft.settings,
-        metadata: { name: "Recorded mock auction" },
+        type: "auction",
       },
     ],
-    quarantinedDrafts: [],
   };
 }
 

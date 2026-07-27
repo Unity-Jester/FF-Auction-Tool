@@ -153,6 +153,31 @@ describe("LeagueReview", () => {
     );
   });
 
+  it("shows the auction money ceilings at the form boundary", async () => {
+    const user = userEvent.setup();
+    render(<LeagueReview draftId="123456789012345678" league={league} />);
+    const budget = screen.getByLabelText("Auction budget");
+    const minBid = screen.getByLabelText("Minimum bid");
+    expect(budget).toHaveAttribute("max", "100000");
+    expect(minBid).toHaveAttribute("max", "10000");
+
+    await user.clear(budget);
+    await user.type(budget, "100001");
+    await user.click(screen.getByRole("button", { name: "Set strategy" }));
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Budget cannot exceed $100,000",
+    );
+
+    await user.clear(budget);
+    await user.type(budget, "200");
+    await user.clear(minBid);
+    await user.type(minBid, "201");
+    await user.click(screen.getByRole("button", { name: "Set strategy" }));
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Minimum bid cannot exceed the auction budget",
+    );
+  });
+
   it("shows saved corrections again after strategy or draft navigation", async () => {
     const user = userEvent.setup();
     const first = render(

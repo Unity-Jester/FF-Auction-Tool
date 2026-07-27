@@ -54,6 +54,17 @@ function errorResponse(error: unknown): NextResponse {
   );
 }
 
+function publicDraftName(
+  draft: ReturnType<typeof SleeperDraftSchema.parse>,
+): string {
+  const name = draft.metadata?.name;
+  return typeof name === "string" &&
+    name.trim().length > 0 &&
+    name.trim().length <= 160
+    ? name.trim()
+    : `Auction ${String(draft.draft_id)}`;
+}
+
 export function createUserDraftsHandler(
   client: DiscoveryClient,
   limiter: RateLimiter = sleeperRateLimiter,
@@ -83,7 +94,10 @@ export function createUserDraftsHandler(
       });
     }
 
-    const rateLimit = await limiter.check(requestClientKey(request));
+    const rateLimit = await limiter.check(
+      requestClientKey(request),
+      request.signal,
+    );
     if (rateLimit.storeUnavailable) {
       return NextResponse.json(
         {
@@ -127,51 +141,20 @@ export function createUserDraftsHandler(
         signal: request.signal,
       });
       const validDrafts = [];
-      const quarantinedDrafts: Array<{
-        reason: "INVALID_DRAFT";
-        index: number;
-        draftId?: string;
-      }> = [];
-      for (const [index, rawDraft] of drafts.entries()) {
+      for (const rawDraft of drafts) {
         const parsed = SleeperDraftSchema.safeParse(rawDraft);
         if (parsed.success) validDrafts.push(parsed.data);
-        else {
-          const rawDraftId =
-            rawDraft &&
-            typeof rawDraft === "object" &&
-            !Array.isArray(rawDraft) &&
-            ("draft_id" in rawDraft
-              ? (rawDraft as Record<string, unknown>).draft_id
-              : undefined);
-          const draftId =
-            (typeof rawDraftId === "string" ||
-              typeof rawDraftId === "number") &&
-            /^[A-Za-z0-9_-]{1,64}$/.test(String(rawDraftId))
-              ? String(rawDraftId)
-              : undefined;
-          quarantinedDrafts.push({
-            reason: "INVALID_DRAFT",
-            index,
-            ...(draftId ? { draftId } : {}),
-          });
-        }
       }
       return NextResponse.json({
-        user: {
-          userId: String(user.user_id),
-          displayName: user.display_name ?? user.username ?? username,
-        },
-        season,
         drafts: validDrafts
           .filter((draft) => draft.type === "auction")
           .map((draft) => ({
             draftId: String(draft.draft_id),
             leagueId: draft.league_id == null ? null : String(draft.league_id),
+            name: publicDraftName(draft),
             status: draft.status,
-            settings: draft.settings,
-            metadata: draft.metadata ?? {},
+            type: "auction" as const,
           })),
-        quarantinedDrafts,
       });
     } catch (error) {
       if (
@@ -179,7 +162,7 @@ export function createUserDraftsHandler(
         error.code === "RATE_LIMITED" &&
         error.retryAfterSeconds
       ) {
-        await limiter.blockFor(error.retryAfterSeconds);
+        await limiter.blockFor(error.retryAfterSeconds, request.signal);
       }
       return errorResponse(error);
     }
