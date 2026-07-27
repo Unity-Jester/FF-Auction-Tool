@@ -1,0 +1,33 @@
+{
+  "draft_id": "1234567890",
+  "league_id": null,
+  "type": "auction",
+  "status": "drafting",
+  "settings": {
+    "teams": 4,
+    "budget": 50,
+    "slots_qb": 1,
+    "slots_rb": 1,
+    "slots_wr": 1,
+    "slots_te": 0,
+    "slots_k": 0,
+    "slots_def": 0,
+    "slots_bn": 1
+  },
+  "metadata": {
+    "name": "Recorded public auction fixture",
+    "scoring_type": "ppr"
+  },
+  "slot_to_roster_id": {
+    "1": 1,
+    "2": 2,
+    "3": 3,
+    "4": 4
+  },
+  "draft_order": {
+    "fixture_alpha": 1,
+    "fixture_bravo": 2,
+    "fixture_charlie": 3,
+    "fixture_delta": 4
+  }
+}

@@ -1,0 +1,139 @@
+import type { DraftPurchase, DraftSnapshot } from "@/domain/draft/types";
+
+export type DraftSessionState = {
+  snapshot: DraftSnapshot;
+  localCorrections: DraftPurchase[];
+};
+
+const playerIdentity = (purchase: DraftPurchase) =>
+  JSON.stringify([purchase.draftId, purchase.playerId]);
+
+const settledIdentity = (purchase: DraftPurchase) =>
+  JSON.stringify([
+    purchase.draftId,
+    purchase.playerId,
+    purchase.rosterId,
+    purchase.amount,
+  ]);
+
+const identifier = (value: unknown): value is string =>
+  typeof value === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(value);
+
+const timestamp = (value: string | null) =>
+  value === null ? Number.POSITIVE_INFINITY : Date.parse(value);
+
+function comparePurchases(a: DraftPurchase, b: DraftPurchase) {
+  const timestampDifference = timestamp(a.createdAt) - timestamp(b.createdAt);
+  return (
+    a.pickNo - b.pickNo ||
+    (Number.isNaN(timestampDifference) ? 0 : timestampDifference) ||
+    a.playerId.localeCompare(b.playerId)
+  );
+}
+
+function validPurchase(
+  value: DraftPurchase,
+  source: DraftPurchase["source"],
+  draftId: string,
+  minBid: number,
+) {
+  return (
+    value.source === source &&
+    value.draftId === draftId &&
+    identifier(value.draftId) &&
+    identifier(value.playerId) &&
+    Number.isSafeInteger(value.rosterId) &&
+    value.rosterId > 0 &&
+    Number.isSafeInteger(value.amount) &&
+    value.amount >= minBid &&
+    Number.isSafeInteger(value.pickNo) &&
+    value.pickNo > 0 &&
+    (value.createdAt === null ||
+      (typeof value.createdAt === "string" && Number.isFinite(Date.parse(value.createdAt)))) &&
+    typeof value.keeper === "boolean"
+  );
+}
+
+function canonicalPurchases(
+  purchases: DraftPurchase[],
+  source: DraftPurchase["source"],
+  draftId: string,
+  minBid: number,
+): DraftPurchase[] {
+  const unique = new Map<string, DraftPurchase>();
+  const valid = purchases
+    .filter((purchase) => validPurchase(purchase, source, draftId, minBid))
+    .sort(comparePurchases);
+  for (const purchase of valid) {
+    // Sleeper can repeat a player while a pick is settling. The latest
+    // canonical record wins so a player can never have two effective owners.
+    unique.set(playerIdentity(purchase), purchase);
+  }
+  return [...unique.values()].sort(comparePurchases);
+}
+
+function equivalentPurchases(a: DraftPurchase[], b: DraftPurchase[]) {
+  return (
+    a.length === b.length &&
+    a.every(
+      (purchase, index) =>
+        JSON.stringify(purchase) === JSON.stringify(b[index]),
+    )
+  );
+}
+
+function exactMatch(local: DraftPurchase, sleeper: DraftPurchase) {
+  return settledIdentity(local) === settledIdentity(sleeper);
+}
+
+/** Reconciles a Sleeper snapshot without mixing in locally corrected purchases. */
+export function reconcileDraft(
+  previous: DraftSessionState,
+  incoming: DraftSnapshot,
+): DraftSessionState {
+  if (
+    !identifier(previous.snapshot.draftId) ||
+    incoming.draftId !== previous.snapshot.draftId ||
+    !Number.isSafeInteger(incoming.league?.minBid) ||
+    incoming.league.minBid <= 0
+  ) {
+    return previous;
+  }
+  const purchases = canonicalPurchases(
+    incoming.purchases,
+    "sleeper",
+    incoming.draftId,
+    incoming.league.minBid,
+  );
+  const localCorrections = canonicalPurchases(
+    previous.localCorrections,
+    "local",
+    incoming.draftId,
+    incoming.league.minBid,
+  ).filter(
+    (local) => !purchases.some((authoritative) => exactMatch(local, authoritative)),
+  );
+  const samePurchases = equivalentPurchases(previous.snapshot.purchases, purchases);
+  const sameCorrections = equivalentPurchases(previous.localCorrections, localCorrections);
+  const sameSnapshot =
+    samePurchases &&
+    JSON.stringify({
+      ...previous.snapshot,
+      purchases: undefined,
+      lastUpdatedAt: undefined,
+    }) ===
+      JSON.stringify({
+        ...incoming,
+        purchases: undefined,
+        lastUpdatedAt: undefined,
+      });
+
+  if (sameSnapshot && sameCorrections) return previous;
+
+  return {
+    snapshot: sameSnapshot
+      ? previous.snapshot
+      : { ...incoming, purchases },
+    localCorrections,
+  };
+}
